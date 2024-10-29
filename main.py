@@ -177,7 +177,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
 
     headers = {'Private-Token': api_key}
 
-try:
+    try:
         # OpenAI API key is already set and validated
 
         # Prepare messages for ChatCompletion
@@ -323,21 +323,21 @@ try:
             logger.error(error_message)
             raise ValueError(error_message)
 
-except requests.exceptions.RequestException as e:
-        logger.exception("A RequestException occurred: %s", e)
-        raise
-except openai.error.AuthenticationError:
-        logger.error("Invalid OpenAI API key during task execution.")
-        raise
-except openai.error.OpenAIError as e:
-        logger.exception("An OpenAIError occurred: %s", e)
-        raise
-except json.JSONDecodeError as e:
-        logger.exception("A JSONDecodeError occurred: %s", e)
-        raise
-except Exception as e:
-        logger.exception("An unexpected error occurred: %s", e)
-        raise
+    except requests.exceptions.RequestException as e:
+            logger.exception("A RequestException occurred: %s", e)
+            raise
+    except openai.error.AuthenticationError:
+            logger.error("Invalid OpenAI API key during task execution.")
+            raise
+    except openai.error.OpenAIError as e:
+            logger.exception("An OpenAIError occurred: %s", e)
+            raise
+    except json.JSONDecodeError as e:
+            logger.exception("A JSONDecodeError occurred: %s", e)
+            raise
+    except Exception as e:
+            logger.exception("An unexpected error occurred: %s", e)
+            raise
 
 if __name__ == "__main__":
     main()
