@@ -4,11 +4,11 @@ import requests
 import random
 import json
 import re
-import time
-import schedule
+from threading import Timer
 from dotenv import load_dotenv
 import openai  # For OpenAI interaction
 import logging
+import time
 
 # Load environment variables
 load_dotenv()
@@ -33,7 +33,7 @@ else:
 # Validate OpenAI API Key
 def validate_openai_api_key():
     openai_api_key = os.getenv('OPENAI_API_KEY', '').strip()
-    logger.debug(f"Validating OpenAI API Key: {openai_api_key}")
+    logger.debug(f"Validating OpenAI API Key.")
     if not openai_api_key:
         logger.error("OPENAI_API_KEY is not set or is empty.")
         sys.exit(1)
@@ -41,7 +41,7 @@ def validate_openai_api_key():
         openai.api_key = openai_api_key
         try:
             # Make a simple API call to test the key
-            openai.Engine.list()
+            openai.Model.list()
             logger.info("OpenAI API key is valid.")
         except openai.error.AuthenticationError:
             logger.error("Invalid OpenAI API key.")
@@ -50,8 +50,25 @@ def validate_openai_api_key():
             logger.error(f"An error occurred while validating OpenAI API key: {e}")
             sys.exit(1)
 
+def main():
+    logger.info("Starting the monitoring script")
+    validate_openai_api_key()
+    schedule_monitoring()
+
+def schedule_monitoring():
+    interval = 2.0  # Interval in seconds
+    def run_monitor():
+        try:
+            monitor_canvas_notes()
+        except Exception as e:
+            logger.exception(f"Error occurred during monitoring: {e}")
+        finally:
+            Timer(interval, run_monitor).start()
+
+    run_monitor()
+
 def monitor_canvas_notes():
-    logger.info("Starting monitor_canvas_notes task")
+    logger.info("Running monitor_canvas_notes")
 
     # Get environment variables for Canvas server details
     target_server = os.getenv('TARGET_SERVER', '').strip()
@@ -145,7 +162,7 @@ def monitor_canvas_notes():
         raise
 
 def process_instruction(canvas_id, note_id, instruction_text):
-    logger.info(f"Starting process_instruction task for note ID {note_id}")
+    logger.info(f"Processing instruction for note ID {note_id}")
     # Get environment variables for Canvas server details
     target_server = os.getenv('TARGET_SERVER', '').strip()
     api_key = os.getenv('API_KEY', '').strip()
@@ -179,7 +196,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
 
         logger.info("Sending request to OpenAI ChatCompletion")
         gpt_response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=messages,
             max_tokens=500,
             temperature=0.7
@@ -205,13 +222,11 @@ def process_instruction(canvas_id, note_id, instruction_text):
         note = response.json()
         logger.debug(f"Retrieved note details: {note}")
 
-        # **Note: Removed the early update of the note to '!! Done !!'**
-
         if response_data['type'] == 'text':
             ai_response = response_data['content']
             logger.info("Processing text response from OpenAI")
 
-            # Generate a random color for the new note, including transparency set to 40%
+            # Generate a random color for the new note, including transparency set to 80% (CC in hex)
             random_color = "#{:02x}{:02x}{:02x}CC".format(
                 random.randint(0, 255),
                 random.randint(0, 255),
@@ -230,7 +245,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
                 },
                 "size": note['size'],
                 "scale": note['scale'],
-                "background_color": random_color  # Random color with 40% transparency
+                "background_color": random_color  # Random color with 80% transparency
             }
 
             # Create the new note as a response
@@ -242,7 +257,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
             response.raise_for_status()
             logger.info("New note created successfully")
 
-            # **Now update the original note to mark as 'done'**
+            # Now update the original note to mark as 'done'
             updated_text = note['text'].replace('!!Processing!!', '!! Done !!')
             update_note_endpoint = f"{target_server}/api/v1/canvases/{canvas_id}/notes/{note_id}"
             update_data = {"text": updated_text}
@@ -294,7 +309,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
             response.raise_for_status()
             logger.info("New image created successfully")
 
-            # **Now update the original note to mark as 'done'**
+            # Now update the original note to mark as 'done'
             updated_text = note['text'].replace('!!Processing!!', '!! Done !!')
             update_note_endpoint = f"{target_server}/api/v1/canvases/{canvas_id}/notes/{note_id}"
             update_data = {"text": updated_text}
@@ -324,12 +339,5 @@ def process_instruction(canvas_id, note_id, instruction_text):
         logger.exception("An unexpected error occurred: %s", e)
         raise
 
-def main():
-    validate_openai_api_key()
-    schedule.every(2).seconds.do(monitor_canvas_notes)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
