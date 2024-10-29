@@ -6,21 +6,9 @@ import json
 import re
 from threading import Timer
 from dotenv import load_dotenv
+import openai  # For OpenAI interaction
 import logging
 import time
-
-# Import the OpenAI client and types
-import openai
-from openai import OpenAI
-from openai.types import (
-    ChatCompletion,
-    ChatCompletionMessageParam,
-    Model,
-    FileObject,
-    ImagesResponse,
-    ErrorObject,
-    # Add other necessary types if needed
-)
 
 # Load environment variables
 load_dotenv()
@@ -42,25 +30,29 @@ if LOGGING:
 else:
     logger.disabled = True
 
-# Initialize the OpenAI client
-def initialize_openai_client():
+# Validate OpenAI API Key
+def validate_openai_api_key():
     openai_api_key = os.getenv('OPENAI_API_KEY', '').strip()
-    logger.debug("Initializing OpenAI client.")
+    logger.debug("Validating OpenAI API Key.")
     if not openai_api_key:
         logger.error("OPENAI_API_KEY is not set or is empty.")
         sys.exit(1)
     else:
+        openai.api_key = openai_api_key
         try:
-            global client
-            client = OpenAI(api_key=openai_api_key)
-            logger.info("OpenAI client initialized successfully.")
-        except ErrorObject as e:
-            logger.error(f"An error occurred while initializing OpenAI client: {e}")
+            # Make a simple API call to test the key
+            openai.Model.list()
+            logger.info("OpenAI API key is valid.")
+        except openai.error.AuthenticationError:
+            logger.error("Invalid OpenAI API key.")
+            sys.exit(1)
+        except openai.error.OpenAIError as e:
+            logger.error(f"An error occurred while validating OpenAI API key: {e}")
             sys.exit(1)
 
 def main():
     logger.info("Starting the monitoring script")
-    initialize_openai_client()
+    validate_openai_api_key()
     schedule_monitoring()
 
 def schedule_monitoring():
@@ -193,9 +185,9 @@ def process_instruction(canvas_id, note_id, instruction_text):
     try:
         # Prepare messages for ChatCompletion
         messages = [
-            ChatCompletionMessageParam(
-                role="system",
-                content=(
+            {
+                "role": "system",
+                "content": (
                     "You are an assistant that can generate text or images based on user instructions. "
                     "For the following instruction, decide whether to generate text or an image. "
                     "If you decide to generate text, respond with a JSON object like this:\n"
@@ -204,21 +196,21 @@ def process_instruction(canvas_id, note_id, instruction_text):
                     '{"type": "image", "content": "<the description of the image to generate>"}\n'
                     "Do not include any additional text or explanations in your response."
                 )
-            ),
-            ChatCompletionMessageParam(
-                role="user",
-                content=instruction_text
-            )
+            },
+            {
+                "role": "user",
+                "content": instruction_text
+            }
         ]
 
         logger.info("Sending request to OpenAI ChatCompletion")
-        chat_response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+        chat_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # Use a valid model name
             messages=messages,
             max_tokens=500,
             temperature=0.7
         )
-        response_text = chat_response.choices[0].message.content.strip()
+        response_text = chat_response['choices'][0]['message']['content'].strip()
         logger.debug(f"OpenAI response: {response_text}")
 
         # Parse the response as JSON
@@ -287,12 +279,12 @@ def process_instruction(canvas_id, note_id, instruction_text):
             logger.info("Processing image response from OpenAI")
 
             # Generate image using OpenAI Image API
-            image_response = client.images.generate(
+            image_response = openai.Image.create(
                 prompt=image_description,
                 n=1,
                 size="512x512"
             )
-            image_url = image_response.data[0].url
+            image_url = image_response['data'][0]['url']
             logger.debug(f"Generated image URL: {image_url}")
 
             # Download the image
