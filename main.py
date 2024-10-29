@@ -1,18 +1,14 @@
-# monitor_script.py
-
 import os
 import sys
 import requests
 import random
 import json
 import re
-from celery import Celery
-from celery.schedules import schedule
-from celery.signals import worker_process_init
+import time
+import schedule
 from dotenv import load_dotenv
 import openai  # For OpenAI interaction
 import logging
-from celery.utils.log import get_task_logger
 
 # Load environment variables
 load_dotenv()
@@ -54,31 +50,7 @@ def validate_openai_api_key():
             logger.error(f"An error occurred while validating OpenAI API key: {e}")
             sys.exit(1)
 
-# Use Celery signal to validate API key when worker starts
-@worker_process_init.connect
-def celery_worker_init(**kwargs):
-    logger.info("Worker process initializing, validating OpenAI API key.")
-    validate_openai_api_key()
-
-# Celery setup for task management
-celery = Celery(
-    'monitor_script',
-    backend=os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0'),
-    broker=os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
-)
-
-# Define the schedule
-celery.conf.beat_schedule = {
-    'monitor-notes-every-2-seconds': {
-        'task': 'monitor_canvas_notes',
-        'schedule': 2.0,  # Every 2 seconds
-    },
-}
-
-celery.conf.timezone = 'UTC'
-
-@celery.task(bind=True, name='monitor_canvas_notes')
-def monitor_canvas_notes(self):
+def monitor_canvas_notes():
     logger.info("Starting monitor_canvas_notes task")
 
     # Get environment variables for Canvas server details
@@ -160,8 +132,8 @@ def monitor_canvas_notes(self):
                 logger.debug(f"Response Body: {response.text}")
                 response.raise_for_status()
 
-                # Add note to task queue for processing
-                process_instruction.apply_async(args=[canvas_id, note['id'], instruction_text], ignore_result=False)
+                # Process the instruction
+                process_instruction(canvas_id, note['id'], instruction_text)
             else:
                 logger.debug(f"No unprocessed instruction found in note ID {note.get('id')}")
 
@@ -172,8 +144,7 @@ def monitor_canvas_notes(self):
         logger.exception("An unexpected error occurred: %s", e)
         raise
 
-@celery.task(bind=True, name='process_instruction')
-def process_instruction(self, canvas_id, note_id, instruction_text):
+def process_instruction(canvas_id, note_id, instruction_text):
     logger.info(f"Starting process_instruction task for note ID {note_id}")
     # Get environment variables for Canvas server details
     target_server = os.getenv('TARGET_SERVER', '').strip()
@@ -208,7 +179,7 @@ def process_instruction(self, canvas_id, note_id, instruction_text):
 
         logger.info("Sending request to OpenAI ChatCompletion")
         gpt_response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+            model="gpt-4",
             messages=messages,
             max_tokens=500,
             temperature=0.7
@@ -352,3 +323,13 @@ def process_instruction(self, canvas_id, note_id, instruction_text):
     except Exception as e:
         logger.exception("An unexpected error occurred: %s", e)
         raise
+
+def main():
+    validate_openai_api_key()
+    schedule.every(2).seconds.do(monitor_canvas_notes)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == '__main__':
+    main()
