@@ -1,7 +1,4 @@
-flask
-python-dotenv
-celery
-redis
 requests
 openai
-
+python-dotenv
+schedule
