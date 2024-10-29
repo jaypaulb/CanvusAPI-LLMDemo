@@ -41,7 +41,7 @@ def validate_openai_api_key():
         openai.api_key = openai_api_key
         try:
             # Make a simple API call to test the key
-            openai.Model.list()
+            openai.Engine.list()
             logger.info("OpenAI API key is valid.")
         except openai.error.AuthenticationError:
             logger.error("Invalid OpenAI API key.")
@@ -177,7 +177,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
 
     headers = {'Private-Token': api_key}
 
-    try:
+try:
         # OpenAI API key is already set and validated
 
         # Prepare messages for ChatCompletion
@@ -191,7 +191,7 @@ def process_instruction(canvas_id, note_id, instruction_text):
                 '{"type": "image", "content": "<the description of the image to generate>"}\n'
                 "Do not include any additional text or explanations in your response."
             )},
-            {"role": "user", "content": instruction_text}
+            {"role": "user", "content":instruction_text}
         ]
 
         logger.info("Sending request to OpenAI ChatCompletion")
@@ -323,19 +323,19 @@ def process_instruction(canvas_id, note_id, instruction_text):
             logger.error(error_message)
             raise ValueError(error_message)
 
-    except requests.exceptions.RequestException as e:
+except requests.exceptions.RequestException as e:
         logger.exception("A RequestException occurred: %s", e)
         raise
-    except openai.error.AuthenticationError:
+except openai.error.AuthenticationError:
         logger.error("Invalid OpenAI API key during task execution.")
         raise
-    except openai.error.OpenAIError as e:
+except openai.error.OpenAIError as e:
         logger.exception("An OpenAIError occurred: %s", e)
         raise
-    except json.JSONDecodeError as e:
+except json.JSONDecodeError as e:
         logger.exception("A JSONDecodeError occurred: %s", e)
         raise
-    except Exception as e:
+except Exception as e:
         logger.exception("An unexpected error occurred: %s", e)
         raise
 
