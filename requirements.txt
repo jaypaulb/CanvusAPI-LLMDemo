@@ -1,6 +1,7 @@
 flask
+python-dotenv
 celery
-flask-dotenv
 redis
 requests
-eventlet
+openai
+
