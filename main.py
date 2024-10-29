@@ -33,7 +33,7 @@ else:
 # Validate OpenAI API Key
 def validate_openai_api_key():
     openai_api_key = os.getenv('OPENAI_API_KEY', '').strip()
-    logger.debug(f"Validating OpenAI API Key.")
+    logger.debug("Validating OpenAI API Key.")
     if not openai_api_key:
         logger.error("OPENAI_API_KEY is not set or is empty.")
         sys.exit(1)
@@ -41,7 +41,7 @@ def validate_openai_api_key():
         openai.api_key = openai_api_key
         try:
             # Make a simple API call to test the key
-            openai.Engine.list()
+            openai.Model.list()
             logger.info("OpenAI API key is valid.")
         except openai.error.AuthenticationError:
             logger.error("Invalid OpenAI API key.")
@@ -57,6 +57,7 @@ def main():
 
 def schedule_monitoring():
     interval = 2.0  # Interval in seconds
+
     def run_monitor():
         try:
             monitor_canvas_notes()
@@ -116,7 +117,7 @@ def monitor_canvas_notes():
             logger.error(error_message)
             raise ValueError(error_message)
 
-        # Monitor the canvas for notes containing '{{ }}'
+        # Monitor the canvas for notes containing '{{ }}' at the start and end
         monitor_notes_endpoint = f"{target_server}/api/v1/canvases/{canvas_id}/notes"
         logger.info(f"Requesting notes from {monitor_notes_endpoint}")
         response = requests.get(monitor_notes_endpoint, headers=headers, timeout=10)
@@ -126,8 +127,8 @@ def monitor_canvas_notes():
         notes = response.json()
         logger.debug(f"Retrieved notes: {notes}")
 
-        # Regular expression pattern to find text within '{{ }}'
-        pattern = re.compile(r'{{(.*?)}}(?!.*!!Processing!!)')
+        # Regular expression pattern to find text that starts with '{{' and ends with '}}'
+        pattern = re.compile(r'^{{(.*?)}}$', re.DOTALL)
 
         # Iterate over notes to find those containing '{{ }}'
         for note in notes:
@@ -148,9 +149,11 @@ def monitor_canvas_notes():
                 logger.debug(f"Response Status Code: {response.status_code}")
                 logger.debug(f"Response Body: {response.text}")
                 response.raise_for_status()
+                logger.info(f"Note ID {note['id']} marked as processing")
 
                 # Process the instruction
                 process_instruction(canvas_id, note['id'], instruction_text)
+                logger.info(f"process_instruction called for note ID {note['id']}")
             else:
                 logger.debug(f"No unprocessed instruction found in note ID {note.get('id')}")
 
@@ -163,6 +166,8 @@ def monitor_canvas_notes():
 
 def process_instruction(canvas_id, note_id, instruction_text):
     logger.info(f"Processing instruction for note ID {note_id}")
+    logger.debug(f"Instruction text: {instruction_text}")
+
     # Get environment variables for Canvas server details
     target_server = os.getenv('TARGET_SERVER', '').strip()
     api_key = os.getenv('API_KEY', '').strip()
@@ -191,12 +196,12 @@ def process_instruction(canvas_id, note_id, instruction_text):
                 '{"type": "image", "content": "<the description of the image to generate>"}\n'
                 "Do not include any additional text or explanations in your response."
             )},
-            {"role": "user", "content":instruction_text}
+            {"role": "user", "content": instruction_text}
         ]
 
         logger.info("Sending request to OpenAI ChatCompletion")
         gpt_response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
+            model="gpt-3.5-turbo",  # Use a valid model name
             messages=messages,
             max_tokens=500,
             temperature=0.7
@@ -324,20 +329,20 @@ def process_instruction(canvas_id, note_id, instruction_text):
             raise ValueError(error_message)
 
     except requests.exceptions.RequestException as e:
-            logger.exception("A RequestException occurred: %s", e)
-            raise
+        logger.exception("A RequestException occurred: %s", e)
+        raise
     except openai.error.AuthenticationError:
-            logger.error("Invalid OpenAI API key during task execution.")
-            raise
+        logger.error("Invalid OpenAI API key during task execution.")
+        raise
     except openai.error.OpenAIError as e:
-            logger.exception("An OpenAIError occurred: %s", e)
-            raise
+        logger.exception("An OpenAIError occurred: %s", e)
+        raise
     except json.JSONDecodeError as e:
-            logger.exception("A JSONDecodeError occurred: %s", e)
-            raise
+        logger.exception("A JSONDecodeError occurred: %s", e)
+        raise
     except Exception as e:
-            logger.exception("An unexpected error occurred: %s", e)
-            raise
+        logger.exception("An unexpected error occurred: %s", e)
+        raise
 
 if __name__ == "__main__":
     main()
