@@ -127,7 +127,7 @@ def monitor_canvas_notes():
         logger.debug(f"Retrieved notes: {notes}")
 
         # Regular expression pattern to find text within '{{ }}'
-        pattern = re.compile(r'{{(.*?)}}')
+        pattern = re.compile(r'{{(.*?)}}(?!.*!!Processing!!)')
 
         # Iterate over notes to find those containing '{{ }}'
         for note in notes:
