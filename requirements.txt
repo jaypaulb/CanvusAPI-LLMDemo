@@ -1,0 +1,6 @@
+flask
+celery
+flask-dotenv
+redis
+requests
+eventlet
