@@ -15,4 +15,7 @@ type Config struct {
 	CanvasID          string
 	CanvusAPIKey      string
 	OpenAIKey         string
+	OpenAINoteModel   string
+	OpenAICanvasModel string
+	OpenAIPDFModel    string
 }

@@ -37,6 +37,9 @@ func loadConfig() (*Config, error) {
 		CanvasID:          os.Getenv("CANVAS_ID"),
 		CanvusAPIKey:      os.Getenv("CANVUS_API_KEY"),
 		OpenAIKey:         os.Getenv("OPENAI_API_KEY"),
+		OpenAINoteModel:   os.Getenv("OPENAI_NOTE_MODEL"),
+		OpenAICanvasModel: os.Getenv("OPENAI_CANVAS_MODEL"),
+		OpenAIPDFModel:    os.Getenv("OPENAI_PDF_MODEL"),
 	}
 
 	// Validate required fields with detailed logging

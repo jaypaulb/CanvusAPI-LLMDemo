@@ -180,7 +180,7 @@ func handleNote(update Update, client *canvusapi.Client) {
 	aiPrompt := strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
 	logHandler("🤖 Prompt: \"%.50s...\"", aiPrompt)
 
-	rawResponse, err := generateAIResponse(ctx, aiPrompt, systemMessage, "gpt-4o-mini", tokenConfig.NoteResponse)
+	rawResponse, err := generateAIResponse(ctx, aiPrompt, systemMessage, config.OpenAINoteModel, tokenConfig.NoteResponse)
 	if err != nil {
 		if err := handleAIError(ctx, client, update, err, baseText); err != nil {
 			logHandler("❌ Failed to create error note: %v", err)
@@ -565,6 +565,7 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 		Prompt:         openai.String(prompt),
 		Model:          openai.F(openai.ImageModelDallE3),
 		ResponseFormat: openai.F(openai.ImageGenerateParamsResponseFormatURL),
+		Style:          openai.F(openai.ImageGenerateParamsStyleVivid),
 		N:              openai.Int(1),
 	})
 	if err != nil {
@@ -916,7 +917,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 				"text": fmt.Sprintf("🔍 Analyzing section %d of %d...", i+1, totalChunks),
 			})
 
-			summary, err := generateAIResponse(ctx, chunk, getPDFChunkPrompt(), "gpt-4o-mini", tokenConfig.PDFPrecis)
+			summary, err := generateAIResponse(ctx, chunk, getPDFChunkPrompt(), config.OpenAIPDFModel, tokenConfig.PDFPrecis)
 			if err != nil {
 				logHandler("❌ Chunk %d processing failed: %v", i+1, err)
 				updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
@@ -1196,7 +1197,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	})
 
 	// Generate AI response
-	rawResponse, err := generateAIResponse(ctx, string(widgetsJSON), systemMessage, "gpt-4o-mini", tokenConfig.CanvasPrecis)
+	rawResponse, err := generateAIResponse(ctx, string(widgetsJSON), systemMessage, config.OpenAICanvasModel, tokenConfig.CanvasPrecis)
 	if err != nil {
 		deleteTriggeringWidget(client, "note", processingNoteID)
 		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string))
@@ -1297,9 +1298,9 @@ func CleanupDownloads() error {
 
 // handleAIError creates a friendly error note, clears processing text, and logs the error
 func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string) error {
-    logHandler("❌ AI Processing Error: %v", err)
+	logHandler("❌ AI Processing Error: %v", err)
 
-    errorMessage := `# AI Processing Error
+	errorMessage := `# AI Processing Error
 
 I apologize, but I encountered an error while processing your request.
 
@@ -1312,15 +1313,15 @@ I apologize, but I encountered an error while processing your request.
 
 *Technical details: %v*`
 
-    errorContent := fmt.Sprintf(errorMessage, err)
+	errorContent := fmt.Sprintf(errorMessage, err)
 
-    // Create error note using fixed size and positioning
-    errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
+	// Create error note using fixed size and positioning
+	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
 
-    // Clear the extra processing text from the original note
-    clearProcessingStatus(client, update["id"].(string), baseText)
+	// Clear the extra processing text from the original note
+	clearProcessingStatus(client, update["id"].(string), baseText)
 
-    return errResp
+	return errResp
 }
 
 func chunkPDFContent(content []byte, maxTokens int) []string {
@@ -1361,7 +1362,7 @@ func consolidateSummaries(ctx context.Context, summaries []string) (string, erro
 	# Conclusions`
 
 	combinedSummaries := strings.Join(summaries, "\n---\n")
-	return generateAIResponse(ctx, combinedSummaries, systemPrompt, "gpt-4o-mini", tokenConfig.PDFPrecis*2) // Model param
+	return generateAIResponse(ctx, combinedSummaries, systemPrompt, config.OpenAIPDFModel, tokenConfig.PDFPrecis*2)
 }
 
 // estimateTokenCount provides a rough estimate of tokens in a text
