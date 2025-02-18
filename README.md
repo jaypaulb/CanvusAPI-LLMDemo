@@ -56,8 +56,8 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
 
 If you prefer not to build the program from source and just want to run it, you can download the pre-built Windows binary and the example environment file:
 
-- **Binary (Windows)**: [CanvusAPI-LLM.exe](https://github.com/yourusername/CanvusAPI-LLMDemo/releases/latest/download/CanvusAPI-LLM.exe)
-- **example.env**: [Download example.env](https://github.com/yourusername/CanvusAPI-LLMDemo/raw/main/example.env)
+- **Binary (Windows)**: [CanvusAPI-LLM.exe](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/CanvusAPI-LLM.exe)
+- **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
 
 Place the downloaded `example.env` file in the same folder as the executable, and rename it to `.env`, update the details in the `.env` file before running it.
 
