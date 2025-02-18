@@ -9,7 +9,7 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
   - Text Analysis and Response
   - PDF Document Summarization
   - Canvas Content Analysis
-  - Image Generation and Analysis
+  - Image Generation
   - Handwriting Recognition (via Google Vision API)
 
 ## Prerequisites
@@ -37,11 +37,29 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    go mod download
    ```
 
-4. Build and run:
+4. Build the executable:
    ```bash
-   go build
-   ./CanvusAPI-LLMDemo
+   go build -o CanvusAPI-LLM.exe .
    ```
+
+5. Run the executable:
+   On Windows:
+   ```bash
+   CanvusAPI-LLM.exe
+   ```
+   On Unix-like systems:
+   ```bash
+   ./CanvusAPI-LLM.exe
+   ```
+
+## Pre-built Releases
+
+If you prefer not to build the program from source and just want to run it, you can download the pre-built Windows binary and the example environment file:
+
+- **Binary (Windows)**: [CanvusAPI-LLM.exe](https://github.com/yourusername/CanvusAPI-LLMDemo/releases/latest/download/CanvusAPI-LLM.exe)
+- **example.env**: [Download example.env](https://github.com/yourusername/CanvusAPI-LLMDemo/raw/main/example.env)
+
+Place the downloaded `example.env` file in the same folder as the executable, and rename it to `.env`, update the details in the `.env` file before running it.
 
 ## Usage
 
@@ -63,6 +81,8 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
 4. **Image Generation**:
    - Include an image generation prompt in your note: `{{Generate an image of a sunset}}`
    - The system will create and place the generated image on your canvas
+
+Once compiled, simply run the executable as described. If you prefer not to build from source, you can download the precompiled `CanvusAPI-LLM.exe` from the GitHub releases.
 
 ## Error Handling
 

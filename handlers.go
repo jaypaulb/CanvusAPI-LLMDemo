@@ -1297,9 +1297,9 @@ func CleanupDownloads() error {
 
 // handleAIError creates a friendly error note, clears processing text, and logs the error
 func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string) error {
-	logHandler("❌ AI Processing Error: %v", err)
+    logHandler("❌ AI Processing Error: %v", err)
 
-	errorMessage := `# AI Processing Error
+    errorMessage := `# AI Processing Error
 
 I apologize, but I encountered an error while processing your request.
 
@@ -1312,15 +1312,15 @@ I apologize, but I encountered an error while processing your request.
 
 *Technical details: %v*`
 
-	errorContent := fmt.Sprintf(errorMessage, err)
+    errorContent := fmt.Sprintf(errorMessage, err)
 
-	// Create error note using fixed size and positioning
-	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
+    // Create error note using fixed size and positioning
+    errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
 
-	// Clear the extra processing text from the original note
-	clearProcessingStatus(client, update["id"].(string), baseText)
+    // Clear the extra processing text from the original note
+    clearProcessingStatus(client, update["id"].(string), baseText)
 
-	return errResp
+    return errResp
 }
 
 func chunkPDFContent(content []byte, maxTokens int) []string {
