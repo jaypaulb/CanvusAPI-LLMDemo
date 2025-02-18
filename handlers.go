@@ -182,7 +182,7 @@ func handleNote(update Update, client *canvusapi.Client) {
 
 	rawResponse, err := generateAIResponse(ctx, aiPrompt, systemMessage, "gpt-4o-mini", tokenConfig.NoteResponse)
 	if err != nil {
-		if err := handleAIError(ctx, client, update, err); err != nil {
+		if err := handleAIError(ctx, client, update, err, baseText); err != nil {
 			logHandler("❌ Failed to create error note: %v", err)
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -194,7 +194,7 @@ func handleNote(update Update, client *canvusapi.Client) {
 	// Parse the AI response
 	var aiNoteResponse AINoteResponse
 	if err := json.Unmarshal([]byte(rawResponse), &aiNoteResponse); err != nil {
-		if err := handleAIError(ctx, client, update, err); err != nil {
+		if err := handleAIError(ctx, client, update, err, baseText); err != nil {
 			logHandler("❌ Failed to create error note: %v", err)
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -1199,7 +1199,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	rawResponse, err := generateAIResponse(ctx, string(widgetsJSON), systemMessage, "gpt-4o-mini", tokenConfig.CanvasPrecis)
 	if err != nil {
 		deleteTriggeringWidget(client, "note", processingNoteID)
-		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err))
+		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string))
 	}
 
 	// Calculate note size based on content
@@ -1295,17 +1295,17 @@ func CleanupDownloads() error {
 	return nil
 }
 
-// handleAIError creates a friendly error note and logs the error
-func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error) error {
+// handleAIError creates a friendly error note, clears processing text, and logs the error
+func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string) error {
 	logHandler("❌ AI Processing Error: %v", err)
 
 	errorMessage := `# AI Processing Error
 
-I apologize, but I encountered an error while processing your request. 
+I apologize, but I encountered an error while processing your request.
 
 **What happened**: The AI system returned an invalid or unexpected response.
 
-**What you can do**: 
+**What you can do**:
 - Try your request again
 - If the problem persists, try rephrasing your request
 - Contact support if the issue continues
@@ -1315,7 +1315,12 @@ I apologize, but I encountered an error while processing your request.
 	errorContent := fmt.Sprintf(errorMessage, err)
 
 	// Create error note using fixed size and positioning
-	return createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
+	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
+
+	// Clear the extra processing text from the original note
+	clearProcessingStatus(client, update["id"].(string), baseText)
+
+	return errResp
 }
 
 func chunkPDFContent(content []byte, maxTokens int) []string {
