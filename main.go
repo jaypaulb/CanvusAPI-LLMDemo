@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 
 // loadConfig loads and validates configuration from environment
 func loadConfig() (*Config, error) {
-	envPath := filepath.Join("..", ".env")
+	envPath := ".env"
 	if err := godotenv.Load(envPath); err != nil {
 		log.Printf("❌ Error loading .env file from %s: %v", envPath, err)
 		return nil, fmt.Errorf("error loading .env file: %w", err)
@@ -85,11 +84,10 @@ func setupLogging() (*os.File, error) {
 }
 
 func main() {
-	// Load environment variables first, before anything else
-	envPath := filepath.Join("..", ".env")
-	if err := godotenv.Load(envPath); err != nil {
-		log.Printf("❌ Failed to load .env file from %s: %v\n", envPath, err)
-		fmt.Printf("❌ Failed to load .env file from %s: %v\n", envPath, err)
+	// Load environment variables from .env in the project root
+	if err := godotenv.Load(".env"); err != nil {
+		log.Printf("❌ Failed to load .env file from .env: %v\n", err)
+		fmt.Printf("❌ Failed to load .env file from .env: %v\n", err)
 		os.Exit(1)
 	}
 
