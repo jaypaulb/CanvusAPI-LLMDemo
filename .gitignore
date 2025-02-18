@@ -1,0 +1,44 @@
+# Environment variables
+.env
+*.env
+.env.local
+.env.*.local
+
+# Go testing
+*.test
+*.out
+
+# Log files
+*.log
+app.log
+
+# Downloads directory (used for temporary file processing)
+downloads/
+/downloads/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Debug files
+__debug_bin
+debug.test
+
+# Dependencies
+/vendor/
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Generated files
+*.generated.go
+*_string.go
+
+# Backup files
+*.bak
+*~ 
