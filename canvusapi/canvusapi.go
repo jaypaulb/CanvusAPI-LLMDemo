@@ -3,9 +3,11 @@ package canvusapi
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -37,13 +39,27 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("API error %d: %s", e.StatusCode, e.Message)
 }
 
+// createHTTPClient creates an HTTP client with optional TLS configuration
+func createHTTPClient(allowSelfSigned bool) *http.Client {
+	client := &http.Client{}
+
+	if allowSelfSigned {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		log.Println("⚠️ Warning: SSL certificate verification is DISABLED. This is not recommended for production environments.")
+	}
+
+	return client
+}
+
 // Core client methods
-func NewClient(server, canvasID, apiKey string) *Client {
+func NewClient(server, canvasID, apiKey string, allowSelfSigned bool) *Client {
 	return &Client{
 		Server:   server,
 		CanvasID: canvasID,
 		ApiKey:   apiKey,
-		HTTP:     &http.Client{},
+		HTTP:     createHTTPClient(allowSelfSigned),
 	}
 }
 
@@ -51,12 +67,13 @@ func NewClientFromEnv() (*Client, error) {
 	server := os.Getenv("CANVUS_SERVER")
 	canvasID := os.Getenv("CANVAS_ID")
 	apiKey := os.Getenv("CANVUS_API_KEY")
+	allowSelfSigned := os.Getenv("ALLOW_SELF_SIGNED_CERTS") == "true"
 
 	if server == "" || canvasID == "" || apiKey == "" {
 		return nil, fmt.Errorf("missing required environment variables")
 	}
 
-	return NewClient(server, canvasID, apiKey), nil
+	return NewClient(server, canvasID, apiKey, allowSelfSigned), nil
 }
 
 func (c *Client) buildURL(endpoint string) string {

@@ -30,6 +30,7 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    OPENAI_API_KEY=your-openai-key
    GOOGLE_VISION_API_KEY=your-google-vision-key
    CANVUS_API_KEY=your-canvus-api-key
+   ALLOW_SELF_SIGNED_CERTS=false  # Set to true only for development/testing with self-signed certificates
    ```
 
 3. Install dependencies:
@@ -71,6 +72,9 @@ If you prefer not to build the program from source and just want to run it, you 
 3. Place both files in the same directory
 4. Rename `example.env` to `.env`
 5. Update the details in the `.env` file with your configuration
+6. If connecting to a server with a self-signed certificate:
+   - Set `ALLOW_SELF_SIGNED_CERTS=true` in your `.env` file
+   - Note: This is not recommended for production environments
 
 #### Linux-specific Steps
 1. Make the binary executable:
@@ -116,6 +120,7 @@ Once compiled, simply run the executable as described. If you prefer not to buil
 - The system includes robust error handling and retry mechanisms
 - Processing status is displayed through color-coded notes
 - Failed operations are logged with detailed error messages
+- SSL/TLS connection errors are clearly reported in logs
 
 ## Logging
 
@@ -124,12 +129,36 @@ Logs are stored in `app.log` with detailed information about:
 - API interactions
 - Error messages
 - Processing status
+- SSL/TLS connection status and warnings
 
 ## Security
 
 - API keys are stored securely in the `.env` file
 - The system supports secure connections to the Canvus server
 - Web interface is protected by authentication
+- SSL/TLS certificate validation is enabled by default
+- Self-signed certificate support is available but not recommended for production
+- Warning messages are logged when SSL verification is disabled
+
+### SSL/TLS Configuration
+
+The application supports two SSL/TLS modes:
+
+1. **Secure Mode (Default)**
+   - SSL certificate validation is enabled
+   - Recommended for production environments
+   - Ensures secure communication with the server
+   - Validates server certificates against trusted CAs
+
+2. **Development Mode (Self-signed Certificates)**
+   - Enabled by setting `ALLOW_SELF_SIGNED_CERTS=true`
+   - Disables SSL certificate validation
+   - Useful for development/testing environments
+   - **Security Risks**:
+     - Vulnerable to man-in-the-middle attacks
+     - Cannot verify server identity
+     - Not recommended for production use
+     - Warning messages are logged when enabled
 
 ## Contributing
 

@@ -175,7 +175,7 @@ func TestMain(m *testing.M) {
 func setupClient() (*canvusapi.Client, error) {
 	envPath := os.Getenv("TEST_ENV_PATH")
 	if envPath == "" {
-		envPath = filepath.Join("..", "..", ".env")
+		envPath = filepath.Join("..", ".env")
 	}
 
 	if err := godotenv.Load(envPath); err != nil {
@@ -190,11 +190,7 @@ func setupClient() (*canvusapi.Client, error) {
 		}
 	}
 
-	return canvusapi.NewClient(
-		os.Getenv("CANVUS_SERVER"),
-		os.Getenv("CANVAS_ID"),
-		os.Getenv("CANVUS_API_KEY"),
-	), nil
+	return canvusapi.NewClientFromEnv()
 }
 
 // TestNoteWidget tests CRUD operations for Note widgets
