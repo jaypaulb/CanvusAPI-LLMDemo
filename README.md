@@ -54,12 +54,39 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
 
 ## Pre-built Releases
 
-If you prefer not to build the program from source and just want to run it, you can download the pre-built Windows binary and the example environment file:
+If you prefer not to build the program from source and just want to run it, you can download the pre-built binaries and the example environment file:
 
-- **Binary (Windows)**: [CanvusAPI-LLM.exe](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/CanvusAPI-LLM.exe)
+### Windows
+- **Binary**: [CanvusAPI-LLM.exe](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/CanvusAPI-LLM.exe)
 - **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
 
-Place the downloaded `example.env` file in the same folder as the executable, and rename it to `.env`, update the details in the `.env` file before running it.
+### Linux (amd64)
+- **Binary**: [canvusapi-linux-amd64](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/canvusapi-linux-amd64)
+- **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
+
+### Deployment Steps
+
+1. Download the appropriate binary for your system (Windows or Linux)
+2. Download the `example.env` file
+3. Place both files in the same directory
+4. Rename `example.env` to `.env`
+5. Update the details in the `.env` file with your configuration
+
+#### Linux-specific Steps
+1. Make the binary executable:
+   ```bash
+   chmod +x canvusapi-linux-amd64
+   ```
+2. Run the binary:
+   ```bash
+   ./canvusapi-linux-amd64
+   ```
+
+#### Windows-specific Steps
+1. Run the executable:
+   ```bash
+   CanvusAPI-LLM.exe
+   ```
 
 ## Usage
 
