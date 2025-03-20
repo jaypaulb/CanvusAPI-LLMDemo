@@ -113,6 +113,47 @@ If you prefer not to build the program from source and just want to run it, you 
    - Include an image generation prompt in your note: `{{Generate an image of a sunset}}`
    - The system will create and place the generated image on your canvas
 
+5. **Custom Menu Integration**:
+   The application provides two special icons for your Canvus custom menu:
+   - `AI_Icon_PDF_Precis`: Creates a PDF analysis trigger
+   - `AI_Icon_Canvus_Precis`: Creates a canvas analysis trigger
+
+   To set up the custom menu:
+   1. Navigate to your Canvus custom menu settings
+   2. Add the icons from the `icons-for-custom-menu` directory:
+      - Use the icons in the root directory for the menu entries
+      - Use the icons in the `Content` subdirectory for the content triggers
+   3. When users click these icons in the custom menu, they can:
+      - Place the PDF analysis trigger on any PDF to generate a summary
+      - Place the canvas analysis trigger on the background to analyze the entire workspace
+
+   **Important Notes**:
+   - The canvas analysis trigger must be placed on the background to work
+   - You can temporarily store the triggers on notes until you're ready to use them
+   - The icons are scaled to 33% of their original size when placed on the canvas
+
+   Example `menu.yml` configuration:
+   ```yaml
+   items:
+     - tooltip: 'AI PDF Precis Helper'
+       icon: 'icons/AI_Icon_PDF_Precis.png'
+       actions:
+         - name: 'create'
+           parameters:
+             type: 'image'
+             source: 'content/AI_Icon_PDF_Precis.png'
+             scale: 0.33
+
+     - tooltip: 'AI Canvus Precis Helper'
+       icon: 'icons/AI_Icon_Canvus_Precis.png'
+       actions:
+         - name: 'create'
+           parameters:
+             type: 'image'
+             source: 'content/AI_Icon_Canvus_Precis.png'
+             scale: 0.33
+   ```
+
 Once compiled, simply run the executable as described. If you prefer not to build from source, you can download the precompiled `CanvusAPI-LLM.exe` from the GitHub releases.
 
 ## Error Handling
