@@ -46,27 +46,6 @@ type AINoteResponse struct {
 // Configuration with defaults
 var config *Config
 
-// Token configurations
-var tokenConfig = struct {
-	PDFPrecis       int64
-	CanvasPrecis    int64
-	NoteResponse    int64
-	ImageAnalysis   int64
-	ErrorResponse   int64
-	PDFChunkSize    int64   // Size of individual chunks
-	PDFMaxChunks    int64   // Maximum number of chunks to process
-	PDFSummaryRatio float64 // Target ratio of summary to original length
-}{
-	PDFPrecis:       1000,  // Longer for document analysis
-	CanvasPrecis:    600,   // Medium for canvas overview
-	NoteResponse:    400,   // Standard for note responses
-	ImageAnalysis:   16384, // Brief for image descriptions
-	ErrorResponse:   200,   // Short for error messages
-	PDFChunkSize:    20000, // Much larger chunks (about 5000 tokens)
-	PDFMaxChunks:    10,    // Fewer chunks since they're bigger
-	PDFSummaryRatio: 0.3,
-}
-
 // Shared resources and synchronization
 var (
 	logMutex       sync.Mutex
@@ -180,7 +159,7 @@ func handleNote(update Update, client *canvusapi.Client) {
 	aiPrompt := strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
 	logHandler("🤖 Prompt: \"%.50s...\"", aiPrompt)
 
-	rawResponse, err := generateAIResponse(ctx, aiPrompt, systemMessage, config.OpenAINoteModel, tokenConfig.NoteResponse)
+	rawResponse, err := generateAIResponse(ctx, aiPrompt, systemMessage, config.OpenAINoteModel, config.NoteResponseTokens)
 	if err != nil {
 		if err := handleAIError(ctx, client, update, err, baseText); err != nil {
 			logHandler("❌ Failed to create error note: %v", err)
@@ -296,18 +275,17 @@ func generateAIResponse(ctx context.Context, prompt, systemMessage, model string
 			openai.SystemMessage(systemMessage),
 			openai.UserMessage(prompt),
 		}),
-		Model:            openai.F(model), // Change this to support the model you prefer to use for this call
+		Model:            openai.F(model),
 		MaxTokens:        openai.Int(maxTokens),
-		Temperature:      openai.Float(0.3), // Lower temperature for faster, more focused responses
-		TopP:             openai.Float(0.1), // Lower top_p for more focused sampling
-		PresencePenalty:  openai.Float(0),   // No presence penalty for speed
-		FrequencyPenalty: openai.Float(0),   // No frequency penalty for speed
+		Temperature:      openai.Float(0.3),
+		TopP:             openai.Float(0.1),
+		PresencePenalty:  openai.Float(0),
+		FrequencyPenalty: openai.Float(0),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to generate AI response: %w", err)
 	}
 
-	// Minimal logging
 	logHandler("Chunk processed")
 	return completion.Choices[0].Message.Content, nil
 }
@@ -896,7 +874,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 	}
 
 	// Process content in chunks
-	chunks := splitIntoChunks(pdfText, int(tokenConfig.PDFChunkSize))
+	chunks := splitIntoChunks(pdfText, int(config.PDFChunkSizeTokens))
 	totalChunks := len(chunks)
 
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
@@ -917,7 +895,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 				"text": fmt.Sprintf("🔍 Analyzing section %d of %d...", i+1, totalChunks),
 			})
 
-			summary, err := generateAIResponse(ctx, chunk, getPDFChunkPrompt(), config.OpenAIPDFModel, tokenConfig.PDFPrecis)
+			summary, err := generateAIResponse(ctx, chunk, getPDFChunkPrompt(), config.OpenAIPDFModel, config.PDFPrecisTokens)
 			if err != nil {
 				logHandler("❌ Chunk %d processing failed: %v", i+1, err)
 				updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
@@ -1197,7 +1175,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	})
 
 	// Generate AI response
-	rawResponse, err := generateAIResponse(ctx, string(widgetsJSON), systemMessage, config.OpenAICanvasModel, tokenConfig.CanvasPrecis)
+	rawResponse, err := generateAIResponse(ctx, string(widgetsJSON), systemMessage, config.OpenAICanvasModel, config.CanvasPrecisTokens)
 	if err != nil {
 		deleteTriggeringWidget(client, "note", processingNoteID)
 		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string))
@@ -1362,7 +1340,7 @@ func consolidateSummaries(ctx context.Context, summaries []string) (string, erro
 	# Conclusions`
 
 	combinedSummaries := strings.Join(summaries, "\n---\n")
-	return generateAIResponse(ctx, combinedSummaries, systemPrompt, config.OpenAIPDFModel, tokenConfig.PDFPrecis*2)
+	return generateAIResponse(ctx, combinedSummaries, systemPrompt, config.OpenAIPDFModel, config.PDFPrecisTokens*2)
 }
 
 // estimateTokenCount provides a rough estimate of tokens in a text

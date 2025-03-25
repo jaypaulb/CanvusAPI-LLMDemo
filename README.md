@@ -33,6 +33,32 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    ALLOW_SELF_SIGNED_CERTS=false  # Set to true only for development/testing with self-signed certificates
    ```
 
+   **OpenAI Model Configuration**:
+   The application uses different OpenAI models for different tasks:
+   - `OPENAI_NOTE_MODEL`: For processing notes and basic AI interactions (default: gpt-3.5-turbo)
+   - `OPENAI_CANVAS_MODEL`: For analyzing entire canvas content (default: gpt-4)
+   - `OPENAI_PDF_MODEL`: For PDF document analysis (default: gpt-4)
+
+   **OpenAI Token Limits**:
+   The application allows you to configure token limits for different operations:
+   - `OPENAI_PDF_PRECIS_TOKENS`: Token limit for PDF analysis (default: 1000)
+   - `OPENAI_CANVAS_PRECIS_TOKENS`: Token limit for canvas analysis (default: 600)
+   - `OPENAI_NOTE_RESPONSE_TOKENS`: Token limit for note responses (default: 400)
+   - `OPENAI_IMAGE_ANALYSIS_TOKENS`: Token limit for image descriptions (default: 16384)
+   - `OPENAI_ERROR_RESPONSE_TOKENS`: Token limit for error messages (default: 200)
+   - `OPENAI_PDF_CHUNK_SIZE_TOKENS`: Size of individual PDF chunks (default: 20000)
+   - `OPENAI_PDF_MAX_CHUNKS_TOKENS`: Maximum number of PDF chunks to process (default: 10)
+   - `OPENAI_PDF_SUMMARY_RATIO`: Target ratio of summary to original length (default: 0.3)
+
+   You can adjust these values based on your needs. For example:
+   ```
+   OPENAI_PDF_PRECIS_TOKENS=2000      # Increase for more detailed PDF analysis
+   OPENAI_CANVAS_PRECIS_TOKENS=800    # Increase for more detailed canvas analysis
+   OPENAI_NOTE_RESPONSE_TOKENS=600    # Increase for longer note responses
+   ```
+
+   Note: Higher token limits will result in more detailed responses but may increase processing time and API costs.
+
 3. Install dependencies:
    ```bash
    go mod download

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -24,6 +25,16 @@ func loadConfig() (*Config, error) {
 
 	log.Println("✅ Successfully loaded .env file")
 
+	// Parse token limits with defaults
+	pdfPrecisTokens := parseInt64Env("OPENAI_PDF_PRECIS_TOKENS", 1000)
+	canvasPrecisTokens := parseInt64Env("OPENAI_CANVAS_PRECIS_TOKENS", 600)
+	noteResponseTokens := parseInt64Env("OPENAI_NOTE_RESPONSE_TOKENS", 400)
+	imageAnalysisTokens := parseInt64Env("OPENAI_IMAGE_ANALYSIS_TOKENS", 16384)
+	errorResponseTokens := parseInt64Env("OPENAI_ERROR_RESPONSE_TOKENS", 200)
+	pdfChunkSizeTokens := parseInt64Env("OPENAI_PDF_CHUNK_SIZE_TOKENS", 20000)
+	pdfMaxChunksTokens := parseInt64Env("OPENAI_PDF_MAX_CHUNKS_TOKENS", 10)
+	pdfSummaryRatioTokens := parseFloat64Env("OPENAI_PDF_SUMMARY_RATIO", 0.3)
+
 	config := &Config{
 		MaxRetries:        3,
 		RetryDelay:        time.Second,
@@ -40,6 +51,15 @@ func loadConfig() (*Config, error) {
 		OpenAINoteModel:   os.Getenv("OPENAI_NOTE_MODEL"),
 		OpenAICanvasModel: os.Getenv("OPENAI_CANVAS_MODEL"),
 		OpenAIPDFModel:    os.Getenv("OPENAI_PDF_MODEL"),
+		// Token limits
+		PDFPrecisTokens:       pdfPrecisTokens,
+		CanvasPrecisTokens:    canvasPrecisTokens,
+		NoteResponseTokens:    noteResponseTokens,
+		ImageAnalysisTokens:   imageAnalysisTokens,
+		ErrorResponseTokens:   errorResponseTokens,
+		PDFChunkSizeTokens:    pdfChunkSizeTokens,
+		PDFMaxChunksTokens:    pdfMaxChunksTokens,
+		PDFSummaryRatioTokens: pdfSummaryRatioTokens,
 	}
 
 	// Validate required fields with detailed logging
@@ -73,6 +93,25 @@ func loadConfig() (*Config, error) {
 
 	log.Println("✅ All required environment variables found")
 	return config, nil
+}
+
+// Helper functions to parse environment variables
+func parseInt64Env(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func parseFloat64Env(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
 }
 
 // setupLogging initializes application logging

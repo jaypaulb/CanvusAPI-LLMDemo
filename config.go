@@ -18,4 +18,13 @@ type Config struct {
 	OpenAINoteModel   string
 	OpenAICanvasModel string
 	OpenAIPDFModel    string
+	// Token limits for different operations
+	PDFPrecisTokens       int64
+	CanvasPrecisTokens    int64
+	NoteResponseTokens    int64
+	ImageAnalysisTokens   int64
+	ErrorResponseTokens   int64
+	PDFChunkSizeTokens    int64
+	PDFMaxChunksTokens    int64
+	PDFSummaryRatioTokens float64
 }
