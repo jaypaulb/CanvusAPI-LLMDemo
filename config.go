@@ -3,21 +3,28 @@ package main
 import "time"
 
 type Config struct {
-	MaxRetries        int
-	RetryDelay        time.Duration
-	AITimeout         time.Duration
-	DownloadsDir      string
-	MaxConcurrent     int
-	ProcessingTimeout time.Duration
-	MaxFileSize       int64
-	GoogleVisionKey   string
-	CanvusServer      string
-	CanvasID          string
-	CanvusAPIKey      string
-	OpenAIKey         string
-	OpenAINoteModel   string
-	OpenAICanvasModel string
-	OpenAIPDFModel    string
+	MaxRetries           int
+	RetryDelay           time.Duration
+	AITimeout            time.Duration
+	DownloadsDir         string
+	MaxConcurrent        int
+	ProcessingTimeout    time.Duration
+	MaxFileSize          int64
+	GoogleVisionKey      string
+	CanvusServer         string
+	CanvasID             string
+	CanvusAPIKey         string
+	OpenAIKey            string
+	OpenAINoteModel      string
+	OpenAICanvasModel    string
+	OpenAIPDFModel       string
+	OpenAIAPIKey         string
+	OpenAIAPIBaseURL     string
+	CanvusServerURL      string
+	CanvasName           string
+	WebUIPassword        string
+	Port                 int
+	AllowSelfSignedCerts bool
 	// Token limits for different operations
 	PDFPrecisTokens       int64
 	CanvasPrecisTokens    int64

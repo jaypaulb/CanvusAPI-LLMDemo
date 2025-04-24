@@ -15,17 +15,59 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Helper function to get environment variable with default value
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// Helper function to parse integer environment variable with default value
+func parseIntEnv(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+// Helper function to parse int64 environment variable with default value
+func parseInt64Env(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+// Helper function to parse float64 environment variable with default value
+func parseFloat64Env(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatValue
+		}
+	}
+	return defaultValue
+}
+
 // loadConfig loads and validates configuration from environment
-func loadConfig() (*Config, error) {
-	envPath := ".env"
+func loadConfig(envPath string) (*Config, error) {
 	if err := godotenv.Load(envPath); err != nil {
-		log.Printf("❌ Error loading .env file from %s: %v", envPath, err)
-		return nil, fmt.Errorf("error loading .env file: %w", err)
+		log.Printf("Warning: .env file not found: %v", err)
 	}
 
-	log.Println("✅ Successfully loaded .env file")
+	// Load OpenAI API base URL with default value
+	openAIAPIBaseURL := getEnvOrDefault("OPENAI_API_BASE_URL", "https://api.openai.com/v1")
 
-	// Parse token limits with defaults
+	// Load OpenAI model configurations with default values
+	openAINoteModel := getEnvOrDefault("OPENAI_NOTE_MODEL", "gpt-3.5-turbo")
+	openAICanvasModel := getEnvOrDefault("OPENAI_CANVAS_MODEL", "gpt-4")
+	openAIPDFModel := getEnvOrDefault("OPENAI_PDF_MODEL", "gpt-4")
+
+	// Load token limits with default values
 	pdfPrecisTokens := parseInt64Env("OPENAI_PDF_PRECIS_TOKENS", 1000)
 	canvasPrecisTokens := parseInt64Env("OPENAI_CANVAS_PRECIS_TOKENS", 600)
 	noteResponseTokens := parseInt64Env("OPENAI_NOTE_RESPONSE_TOKENS", 400)
@@ -33,24 +75,55 @@ func loadConfig() (*Config, error) {
 	errorResponseTokens := parseInt64Env("OPENAI_ERROR_RESPONSE_TOKENS", 200)
 	pdfChunkSizeTokens := parseInt64Env("OPENAI_PDF_CHUNK_SIZE_TOKENS", 20000)
 	pdfMaxChunksTokens := parseInt64Env("OPENAI_PDF_MAX_CHUNKS_TOKENS", 10)
-	pdfSummaryRatioTokens := parseFloat64Env("OPENAI_PDF_SUMMARY_RATIO", 0.3)
+	pdfSummaryRatio := parseFloat64Env("OPENAI_PDF_SUMMARY_RATIO", 0.3)
 
-	config := &Config{
-		MaxRetries:        3,
-		RetryDelay:        time.Second,
-		AITimeout:         30 * time.Second,
-		DownloadsDir:      "./downloads",
-		MaxConcurrent:     5,
-		ProcessingTimeout: 5 * time.Minute,
-		MaxFileSize:       50 * 1024 * 1024,
-		GoogleVisionKey:   os.Getenv("GOOGLE_VISION_API_KEY"),
-		CanvusServer:      os.Getenv("CANVUS_SERVER"),
-		CanvasID:          os.Getenv("CANVAS_ID"),
-		CanvusAPIKey:      os.Getenv("CANVUS_API_KEY"),
-		OpenAIKey:         os.Getenv("OPENAI_API_KEY"),
-		OpenAINoteModel:   os.Getenv("OPENAI_NOTE_MODEL"),
-		OpenAICanvasModel: os.Getenv("OPENAI_CANVAS_MODEL"),
-		OpenAIPDFModel:    os.Getenv("OPENAI_PDF_MODEL"),
+	// Load other configurations
+	port := parseIntEnv("PORT", 3000)
+	maxConcurrent := parseIntEnv("MAX_CONCURRENT", 5)
+	processingTimeout := time.Duration(parseIntEnv("PROCESSING_TIMEOUT", 300)) * time.Second
+	maxFileSize := parseInt64Env("MAX_FILE_SIZE", 52428800) // 50MB
+	downloadsDir := getEnvOrDefault("DOWNLOADS_DIR", "./downloads")
+	allowSelfSignedCerts := getEnvOrDefault("ALLOW_SELF_SIGNED_CERTS", "false") == "true"
+
+	// Validate required environment variables
+	requiredVars := []string{
+		"CANVUS_SERVER",
+		"CANVAS_NAME",
+		"CANVAS_ID",
+		"OPENAI_API_KEY",
+		"CANVUS_API_KEY",
+		"WEBUI_PWD",
+	}
+
+	var missingVars []string
+	for _, v := range requiredVars {
+		if os.Getenv(v) == "" {
+			missingVars = append(missingVars, v)
+		}
+	}
+
+	if len(missingVars) > 0 {
+		return nil, fmt.Errorf("missing required environment variables: %v", missingVars)
+	}
+
+	return &Config{
+		CanvusServerURL:      os.Getenv("CANVUS_SERVER"),
+		CanvasName:           os.Getenv("CANVAS_NAME"),
+		CanvasID:             os.Getenv("CANVAS_ID"),
+		OpenAIAPIKey:         os.Getenv("OPENAI_API_KEY"),
+		OpenAIAPIBaseURL:     openAIAPIBaseURL,
+		OpenAINoteModel:      openAINoteModel,
+		OpenAICanvasModel:    openAICanvasModel,
+		OpenAIPDFModel:       openAIPDFModel,
+		GoogleVisionKey:      os.Getenv("GOOGLE_VISION_API_KEY"),
+		CanvusAPIKey:         os.Getenv("CANVUS_API_KEY"),
+		WebUIPassword:        os.Getenv("WEBUI_PWD"),
+		Port:                 port,
+		MaxConcurrent:        maxConcurrent,
+		ProcessingTimeout:    processingTimeout,
+		MaxFileSize:          maxFileSize,
+		DownloadsDir:         downloadsDir,
+		AllowSelfSignedCerts: allowSelfSignedCerts,
 		// Token limits
 		PDFPrecisTokens:       pdfPrecisTokens,
 		CanvasPrecisTokens:    canvasPrecisTokens,
@@ -59,59 +132,8 @@ func loadConfig() (*Config, error) {
 		ErrorResponseTokens:   errorResponseTokens,
 		PDFChunkSizeTokens:    pdfChunkSizeTokens,
 		PDFMaxChunksTokens:    pdfMaxChunksTokens,
-		PDFSummaryRatioTokens: pdfSummaryRatioTokens,
-	}
-
-	// Validate required fields with detailed logging
-	missingVars := []string{}
-	if config.CanvusServer == "" {
-		log.Println("❌ Missing environment variable: CANVUS_SERVER")
-		missingVars = append(missingVars, "CANVUS_SERVER")
-	}
-	if config.CanvasID == "" {
-		log.Println("❌ Missing environment variable: CANVAS_ID")
-		missingVars = append(missingVars, "CANVAS_ID")
-	}
-	if config.CanvusAPIKey == "" {
-		log.Println("❌ Missing environment variable: CANVUS_API_KEY")
-		missingVars = append(missingVars, "CANVUS_API_KEY")
-	}
-	if config.OpenAIKey == "" {
-		log.Println("❌ Missing environment variable: OPENAI_API_KEY")
-		missingVars = append(missingVars, "OPENAI_API_KEY")
-	}
-	if config.GoogleVisionKey == "" {
-		log.Println("❌ Missing environment variable: GOOGLE_VISION_API_KEY")
-		missingVars = append(missingVars, "GOOGLE_VISION_API_KEY")
-	}
-
-	if len(missingVars) > 0 {
-		errorMsg := fmt.Sprintf("❌ Missing required environment variables: %v", missingVars)
-		log.Println(errorMsg)
-		return nil, fmt.Errorf(errorMsg)
-	}
-
-	log.Println("✅ All required environment variables found")
-	return config, nil
-}
-
-// Helper functions to parse environment variables
-func parseInt64Env(key string, defaultValue int64) int64 {
-	if value := os.Getenv(key); value != "" {
-		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
-}
-
-func parseFloat64Env(key string, defaultValue float64) float64 {
-	if value := os.Getenv(key); value != "" {
-		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
+		PDFSummaryRatioTokens: pdfSummaryRatio,
+	}, nil
 }
 
 // setupLogging initializes application logging
@@ -142,7 +164,7 @@ func main() {
 	defer logFile.Close()
 
 	// Load configuration
-	cfg, err := loadConfig()
+	cfg, err := loadConfig(".env")
 	if err != nil {
 		log.Printf("❌ Failed to load configuration: %v", err)
 		fmt.Printf("❌ Failed to load configuration: %v\n", err)
@@ -157,9 +179,10 @@ func main() {
 
 	// Initialize Canvus client
 	client := canvusapi.NewClient(
-		cfg.CanvusServer,
+		cfg.CanvusServerURL,
 		cfg.CanvasID,
 		cfg.CanvusAPIKey,
+		cfg.AllowSelfSignedCerts,
 	)
 
 	// Create context for graceful shutdown
