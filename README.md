@@ -11,6 +11,7 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
   - Canvas Content Analysis
   - Image Generation
   - Handwriting Recognition (via Google Vision API)
+- **Flexible OpenAI Integration**: Support for custom OpenAI API endpoints and model configurations
 
 ## Prerequisites
 
@@ -33,25 +34,44 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    ALLOW_SELF_SIGNED_CERTS=false  # Set to true only for development/testing with self-signed certificates
    ```
 
-   **OpenAI Model Configuration**:
-   The application uses different OpenAI models for different tasks:
-   - `OPENAI_NOTE_MODEL`: For processing notes and basic AI interactions (default: gpt-3.5-turbo)
-   - `OPENAI_CANVAS_MODEL`: For analyzing entire canvas content (default: gpt-4)
-   - `OPENAI_PDF_MODEL`: For PDF document analysis (default: gpt-4)
+   **OpenAI Configuration**:
+   The application provides flexible configuration options for OpenAI integration:
 
-   **OpenAI Token Limits**:
-   The application allows you to configure token limits for different operations:
-   - `OPENAI_PDF_PRECIS_TOKENS`: Token limit for PDF analysis (default: 1000)
-   - `OPENAI_CANVAS_PRECIS_TOKENS`: Token limit for canvas analysis (default: 600)
-   - `OPENAI_NOTE_RESPONSE_TOKENS`: Token limit for note responses (default: 400)
-   - `OPENAI_IMAGE_ANALYSIS_TOKENS`: Token limit for image descriptions (default: 16384)
-   - `OPENAI_ERROR_RESPONSE_TOKENS`: Token limit for error messages (default: 200)
-   - `OPENAI_PDF_CHUNK_SIZE_TOKENS`: Size of individual PDF chunks (default: 20000)
-   - `OPENAI_PDF_MAX_CHUNKS_TOKENS`: Maximum number of PDF chunks to process (default: 10)
-   - `OPENAI_PDF_SUMMARY_RATIO`: Target ratio of summary to original length (default: 0.3)
+   - **API Base URL**:
+     ```
+     OPENAI_API_BASE_URL=https://api.openai.com/v1
+     ```
+     - Default: `https://api.openai.com/v1`
+     - Use this to specify a custom OpenAI API endpoint
+     - Useful for:
+       - Using different API versions
+       - Pointing to a proxy or custom endpoint
+       - Development and testing environments
+
+   - **Model Selection**:
+     The application uses different OpenAI models for different tasks:
+     ```
+     OPENAI_NOTE_MODEL=gpt-3.5-turbo    # For processing notes and basic AI interactions
+     OPENAI_CANVAS_MODEL=gpt-4          # For analyzing entire canvas content
+     OPENAI_PDF_MODEL=gpt-4             # For PDF document analysis
+     ```
+
+   - **Token Limits**:
+     Configure token limits for different operations:
+     ```
+     OPENAI_PDF_PRECIS_TOKENS=1000      # Token limit for PDF analysis
+     OPENAI_CANVAS_PRECIS_TOKENS=600    # Token limit for canvas analysis
+     OPENAI_NOTE_RESPONSE_TOKENS=400    # Token limit for note responses
+     OPENAI_IMAGE_ANALYSIS_TOKENS=16384 # Token limit for image descriptions
+     OPENAI_ERROR_RESPONSE_TOKENS=200   # Token limit for error messages
+     OPENAI_PDF_CHUNK_SIZE_TOKENS=20000 # Size of individual PDF chunks
+     OPENAI_PDF_MAX_CHUNKS_TOKENS=10    # Maximum number of PDF chunks
+     OPENAI_PDF_SUMMARY_RATIO=0.3       # Target summary ratio
+     ```
 
    You can adjust these values based on your needs. For example:
    ```
+   OPENAI_API_BASE_URL=https://your-custom-endpoint.com/v1  # Use custom endpoint
    OPENAI_PDF_PRECIS_TOKENS=2000      # Increase for more detailed PDF analysis
    OPENAI_CANVAS_PRECIS_TOKENS=800    # Increase for more detailed canvas analysis
    OPENAI_NOTE_RESPONSE_TOKENS=600    # Increase for longer note responses
