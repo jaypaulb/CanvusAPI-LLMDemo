@@ -12,11 +12,12 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
   - Image Generation
   - Handwriting Recognition (via Google Vision API)
 - **Flexible OpenAI Integration**: Support for custom OpenAI API endpoints and model configurations
+- **Local LLM Support**: Compatible with local LLM servers like LLaMA, Ollama, and LM Studio
 
 ## Prerequisites
 
 - A Canvus Server instance
-- OpenAI API key
+- OpenAI API key (or local LLM server)
 - Google Vision API key (optional, for handwriting recognition)
 - Go programming environment
 
@@ -43,10 +44,10 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
      ```
      - Default: `https://api.openai.com/v1`
      - Use this to specify a custom OpenAI API endpoint
-     - Useful for:
-       - Using different API versions
-       - Pointing to a proxy or custom endpoint
-       - Development and testing environments
+     - Common local LLM server endpoints:
+       - LLaMA server: `http://localhost:8000/v1`
+       - Ollama server: `http://localhost:11434/v1`
+       - LM Studio server: `http://localhost:1234/v1`
 
    - **Model Selection**:
      The application uses different OpenAI models for different tasks:
@@ -55,6 +56,11 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
      OPENAI_CANVAS_MODEL=gpt-4          # For analyzing entire canvas content
      OPENAI_PDF_MODEL=gpt-4             # For PDF document analysis
      ```
+     For local LLMs, use the model names as configured in your server:
+     - LLaMA 2: `llama2`
+     - Mistral: `mistral`
+     - CodeLlama: `codellama`
+     - Or your custom model name
 
    - **Token Limits**:
      Configure token limits for different operations:
@@ -68,10 +74,17 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
      OPENAI_PDF_MAX_CHUNKS_TOKENS=10    # Maximum number of PDF chunks
      OPENAI_PDF_SUMMARY_RATIO=0.3       # Target summary ratio
      ```
+     Note: Local LLMs may have different token limits, adjust accordingly
 
    You can adjust these values based on your needs. For example:
    ```
-   OPENAI_API_BASE_URL=https://your-custom-endpoint.com/v1  # Use custom endpoint
+   # Using local LLaMA server
+   OPENAI_API_BASE_URL=http://localhost:8000/v1
+   OPENAI_NOTE_MODEL=llama2
+   OPENAI_CANVAS_MODEL=llama2
+   OPENAI_PDF_MODEL=llama2
+   
+   # Adjust token limits for local LLM
    OPENAI_PDF_PRECIS_TOKENS=2000      # Increase for more detailed PDF analysis
    OPENAI_CANVAS_PRECIS_TOKENS=800    # Increase for more detailed canvas analysis
    OPENAI_NOTE_RESPONSE_TOKENS=600    # Increase for longer note responses
