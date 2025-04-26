@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go_backend/canvusapi"
+	"go_backend/core"
 	"go_backend/logging"
 
 	"bytes"
@@ -23,7 +24,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/ledongthuc/pdf"
-	"github.com/openai/openai-go"
+	"github.com/sashabaranov/go-openai"
 )
 
 // Add constants at the top
@@ -44,7 +45,7 @@ type AINoteResponse struct {
 }
 
 // Configuration with defaults
-var config *Config
+var config *core.Config
 
 // Shared resources and synchronization
 var (
@@ -99,7 +100,7 @@ func truncateText(text string, length int) string {
 }
 
 // handleNote processes Note widget updates
-func handleNote(update Update, client *canvusapi.Client) {
+func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 	if err := validateUpdate(update); err != nil {
 		logHandler("❌ Invalid update: %v", err)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -129,7 +130,7 @@ func handleNote(update Update, client *canvusapi.Client) {
 
 	err := updateNoteWithRetry(client, noteID, map[string]interface{}{
 		"text": baseText + "\n\n⚙️ Starting AI Processing...",
-	})
+	}, config)
 	if err != nil {
 		logHandler("❌ Failed to mark Note as processing: ID=%s, Error=%v", noteID, err)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -147,21 +148,24 @@ func handleNote(update Update, client *canvusapi.Client) {
 	// Update note to show we're analyzing the request
 	updateNoteWithRetry(client, noteID, map[string]interface{}{
 		"text": baseText + "\n\n🔍 Analyzing request...",
-	})
+	}, config)
 
 	// Generate the AI response
 	systemMessage := "You are an assistant capable of interpreting structured text triggers from a Note widget. " +
 		"Evaluate whether the content in the Note is better suited for generating text or creating an image. " +
 		"If generating text, respond with a JSON object like: {\"type\": \"text\", \"content\": \"...\"}. " +
 		"If creating an image, respond with a JSON object like: {\"type\": \"image\", \"content\": \"...\"}. " +
+		"For image requests, you must craft a vivid, imaginative, and highly detailed prompt for an AI image generator. " +
+		"Do NOT simply repeat or rephrase the user's input. Instead, expand it into a unique, creative, and visually rich scene, including style, mood, composition, and any relevant artistic details. " +
+		"The response should be rich and meaningful. Never just a repeat of the user's input. " +
 		"Do not include any additional text or explanations."
 
 	aiPrompt := strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
 	logHandler("🤖 Prompt: \"%.50s...\"", aiPrompt)
 
-	rawResponse, err := generateAIResponse(ctx, aiPrompt, systemMessage, config.OpenAINoteModel, config.NoteResponseTokens)
+	rawResponse, err := generateAIResponse(aiPrompt, config, systemMessage)
 	if err != nil {
-		if err := handleAIError(ctx, client, update, err, baseText); err != nil {
+		if err := handleAIError(ctx, client, update, err, baseText, config); err != nil {
 			logHandler("❌ Failed to create error note: %v", err)
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -173,7 +177,7 @@ func handleNote(update Update, client *canvusapi.Client) {
 	// Parse the AI response
 	var aiNoteResponse AINoteResponse
 	if err := json.Unmarshal([]byte(rawResponse), &aiNoteResponse); err != nil {
-		if err := handleAIError(ctx, client, update, err, baseText); err != nil {
+		if err := handleAIError(ctx, client, update, err, baseText, config); err != nil {
 			logHandler("❌ Failed to create error note: %v", err)
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -186,26 +190,18 @@ func handleNote(update Update, client *canvusapi.Client) {
 	case "text":
 		updateNoteWithRetry(client, noteID, map[string]interface{}{
 			"text": baseText + "\n\n📝 Generating text response...",
-		})
+		}, config)
 		logHandler("📝 Creating text response for Note: ID=%s", noteID)
-		creationErr = createNoteFromResponse(aiNoteResponse.Content, noteID, update, false, client)
+		creationErr = createNoteFromResponse(aiNoteResponse.Content, noteID, update, false, client, config)
 
 	case "image":
 		// For image generation, provide more detailed progress updates
 		updateNoteWithRetry(client, noteID, map[string]interface{}{
 			"text": baseText + "\n\n🎨 Generating image...\nThis may take up to 30 seconds.",
-		})
+		}, config)
 		logHandler("🎨 Creating image response for Note: ID=%s", noteID)
 
-		// Update progress after 10 seconds if still processing
-		go func() {
-			time.Sleep(10 * time.Second)
-			updateNoteWithRetry(client, noteID, map[string]interface{}{
-				"text": baseText + "\n\n🎨 Still generating image...\n⏳ Almost there!",
-			})
-		}()
-
-		creationErr = processAIImage(ctx, client, aiNoteResponse.Content, update)
+		creationErr = processAIImage(ctx, client, aiNoteResponse.Content, update, config)
 
 	default:
 		logHandler("❌ Unexpected AI response type for Note: ID=%s, Type=%s", noteID, aiNoteResponse.Type)
@@ -215,14 +211,16 @@ func handleNote(update Update, client *canvusapi.Client) {
 	if creationErr != nil {
 		logHandler("❌ Failed to create response widget for Note: ID=%s, Error=%v", noteID, creationErr)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
-		updateNoteWithRetry(client, noteID, map[string]interface{}{
-			"text": baseText + "\n\n❌ Error: Failed to create response",
-		})
+		// Create a new note with the error details
+		errorContent := fmt.Sprintf("# AI Image Generation Error\n\n❌ Failed to generate image for your request.\n\n**Error Details:** %v", creationErr)
+		createNoteFromResponse(errorContent, noteID, update, true, client, config)
+		// Clear the processing status from the original note
+		clearProcessingStatus(client, noteID, baseText, config)
 		return
 	}
 
 	// Clear the processing status
-	clearProcessingStatus(client, noteID, baseText)
+	clearProcessingStatus(client, noteID, baseText, config)
 
 	// Update metrics
 	atomic.AddInt64(&handlerMetrics.processedNotes, 1)
@@ -253,45 +251,116 @@ func validateUpdate(update Update) error {
 }
 
 // updateNoteWithRetry attempts to update a note with retries
-func updateNoteWithRetry(client *canvusapi.Client, noteID string, payload map[string]interface{}) error {
+func updateNoteWithRetry(client *canvusapi.Client, noteID string, payload map[string]interface{}, config *core.Config) error {
 	for attempt := 1; attempt <= config.MaxRetries; attempt++ {
+		// Log the attempt and payload details
+		logHandler("Attempting note update - ID=%s, Attempt=%d/%d, Payload=%+v",
+			noteID, attempt, config.MaxRetries, payload)
+
 		_, err := client.UpdateNote(noteID, payload)
 		if err == nil {
 			logHandler("Note updated successfully: ID=%s on attempt %d", noteID, attempt)
 			return nil
 		}
-		logHandler("Retry %d/%d failed to update Note: ID=%s, Error=%v",
-			attempt, config.MaxRetries, noteID, err)
+
+		// Enhanced error logging
+		if apiErr, ok := err.(*canvusapi.APIError); ok {
+			logHandler("Retry %d/%d failed to update Note: ID=%s, StatusCode=%d, Error=%v",
+				attempt, config.MaxRetries, noteID, apiErr.StatusCode, apiErr.Message)
+		} else {
+			logHandler("Retry %d/%d failed to update Note: ID=%s, Error=%v",
+				attempt, config.MaxRetries, noteID, err)
+		}
+
 		time.Sleep(config.RetryDelay)
 	}
 	return fmt.Errorf("failed to update Note: ID=%s after %d attempts", noteID, config.MaxRetries)
 }
 
 // generateAIResponse generates an AI response using OpenAI
-func generateAIResponse(ctx context.Context, prompt, systemMessage, model string, maxTokens int64) (string, error) {
-	client := openai.NewClient()
-	completion, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemMessage),
-			openai.UserMessage(prompt),
-		}),
-		Model:            openai.F(model),
-		MaxTokens:        openai.Int(maxTokens),
-		Temperature:      openai.Float(0.3),
-		TopP:             openai.Float(0.1),
-		PresencePenalty:  openai.Float(0),
-		FrequencyPenalty: openai.Float(0),
-	})
+func generateAIResponse(prompt string, config *core.Config, systemMessage string) (string, error) {
+	// Create client with configuration
+	clientConfig := openai.DefaultConfig(config.OpenAIAPIKey)
+
+	// Use TextLLMURL if set, otherwise fall back to BaseLLMURL
+	if config.TextLLMURL != "" {
+		clientConfig.BaseURL = config.TextLLMURL
+	} else if config.BaseLLMURL != "" {
+		clientConfig.BaseURL = config.BaseLLMURL
+	}
+	client := openai.NewClientWithConfig(clientConfig)
+
+	ctx := context.Background()
+
+	// Make the system message more restrictive and direct
+	enhancedSystemMessage := "You are a JSON-only response generator. " +
+		"CRITICAL: Respond with ONLY valid JSON. No other text allowed. " +
+		"No explanations. No XML tags. No thinking out loud. " +
+		systemMessage + "\n" +
+		"RESPONSE FORMAT:\n" +
+		"For text: {\"type\": \"text\", \"content\": \"your response\"}\n" +
+		"For image: {\"type\": \"image\", \"content\": \"your prompt\"}"
+
+	resp, err := client.CreateChatCompletion(
+		ctx,
+		openai.ChatCompletionRequest{
+			Model: config.OpenAINoteModel,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleSystem,
+					Content: enhancedSystemMessage,
+				},
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: prompt,
+				},
+			},
+			MaxTokens:   int(config.NoteResponseTokens),
+			Temperature: 0.3,
+		},
+	)
+
 	if err != nil {
-		return "", fmt.Errorf("failed to generate AI response: %w", err)
+		return "", fmt.Errorf("error generating AI response: %w", err)
 	}
 
-	logHandler("Chunk processed")
-	return completion.Choices[0].Message.Content, nil
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response choices returned from AI")
+	}
+
+	// Get the raw response
+	rawResponse := resp.Choices[0].Message.Content
+
+	// Clean up the response - find the first { and last }
+	startIdx := strings.Index(rawResponse, "{")
+	endIdx := strings.LastIndex(rawResponse, "}")
+
+	if startIdx == -1 || endIdx == -1 || startIdx > endIdx {
+		return "", fmt.Errorf("response does not contain valid JSON: %s", rawResponse)
+	}
+
+	// Extract just the JSON part
+	jsonResponse := rawResponse[startIdx : endIdx+1]
+
+	// Validate it's parseable JSON
+	var testParse map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
+		return "", fmt.Errorf("invalid JSON in response: %w", err)
+	}
+
+	// Validate it has the required fields
+	if _, ok := testParse["type"].(string); !ok {
+		return "", fmt.Errorf("response missing 'type' field")
+	}
+	if _, ok := testParse["content"].(string); !ok {
+		return "", fmt.Errorf("response missing 'content' field")
+	}
+
+	return jsonResponse, nil
 }
 
 // clearProcessingStatus removes processing indicator from note
-func clearProcessingStatus(client *canvusapi.Client, noteID, processingText string) {
+func clearProcessingStatus(client *canvusapi.Client, noteID, processingText string, config *core.Config) {
 	clearedText := strings.ReplaceAll(processingText, "\n !! AI Processing !!", "")
 
 	// First get the widget to determine its type
@@ -328,7 +397,7 @@ func clearProcessingStatus(client *canvusapi.Client, noteID, processingText stri
 }
 
 // Helper function to get absolute location
-func getAbsoluteLocation(client *canvusapi.Client, widget Update) (map[string]float64, error) {
+func getAbsoluteLocation(client *canvusapi.Client, widget Update, config *core.Config) (map[string]float64, error) {
 	parentID, ok := widget["parent_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("no parent_id found")
@@ -379,7 +448,7 @@ func getAbsoluteLocation(client *canvusapi.Client, widget Update) (map[string]fl
 }
 
 // createNoteFromResponse creates a new Note widget based on the AI response.
-func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate Update, errorNote bool, client *canvusapi.Client) error {
+func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate Update, errorNote bool, client *canvusapi.Client, config *core.Config) error {
 	// Log content preview
 	contentPreview := content
 	if len(content) > 30 {
@@ -461,7 +530,7 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 			scale = baseScale * (1.0 + (1.0 - contentRatio))
 
 			const maxScale = 1.0
-			scale = math.Min(maxScale, scale)
+			scale = math.Min(maxScale, scale*2)
 
 			size = map[string]interface{}{
 				"width":  width,
@@ -526,7 +595,7 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 }
 
 // processAIImage generates and uploads an image from the AI's response
-func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string, update Update) error {
+func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config) error {
 	downloadsMutex.Lock()
 	defer downloadsMutex.Unlock()
 
@@ -537,18 +606,64 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 		return fmt.Errorf("failed to create downloads directory: %w", err)
 	}
 
-	// Generate the image using OpenAI
-	aiClient := openai.NewClient()
-	image, err := aiClient.Images.Generate(ctx, openai.ImageGenerateParams{
-		Prompt:         openai.String(prompt),
-		Model:          openai.F(openai.ImageModelDallE3),
-		ResponseFormat: openai.F(openai.ImageGenerateParamsResponseFormatURL),
-		Style:          openai.F(openai.ImageGenerateParamsStyleVivid),
-		N:              openai.Int(1),
+	// Generate the image using the configured API endpoint
+	imageConfig := openai.DefaultConfig(config.OpenAIAPIKey)
+
+	// Use ImageLLMURL if set, otherwise fall back to BaseLLMURL
+	if config.ImageLLMURL != "" {
+		logHandler("Using image-specific API URL: %s", config.ImageLLMURL)
+		imageConfig.BaseURL = config.ImageLLMURL
+	} else if config.BaseLLMURL != "" {
+		logHandler("Using base LLM URL for image generation: %s", config.BaseLLMURL)
+		imageConfig.BaseURL = config.BaseLLMURL
+	}
+
+	// Check if the endpoint supports image generation
+	currentEndpoint := config.ImageLLMURL
+	if currentEndpoint == "" {
+		currentEndpoint = config.BaseLLMURL
+	}
+
+	if strings.Contains(strings.ToLower(currentEndpoint), "127.0.0.1") ||
+		strings.Contains(strings.ToLower(currentEndpoint), "localhost") {
+		return fmt.Errorf("image generation is not supported by the local API endpoint (%s). "+
+			"Please configure IMAGE_LLM_URL to use a service that supports image generation",
+			currentEndpoint)
+	}
+
+	aiClient := openai.NewClientWithConfig(imageConfig)
+
+	// Log the image request details
+	logHandler("Creating image with prompt: %s", prompt)
+
+	image, err := aiClient.CreateImage(ctx, openai.ImageRequest{
+		Prompt:         prompt,
+		Model:          openai.CreateImageModelDallE3,
+		ResponseFormat: openai.CreateImageResponseFormatURL,
+		Style:          openai.CreateImageStyleVivid,
+		N:              1,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to generate AI image: %w", err)
 	}
+
+	// Validate image response
+	if image.Data == nil {
+		logHandler("API returned nil Data field")
+		return fmt.Errorf("no image data returned from API")
+	}
+
+	if len(image.Data) == 0 {
+		logHandler("API returned empty Data array")
+		return fmt.Errorf("no image data returned from API")
+	}
+
+	if image.Data[0].URL == "" {
+		logHandler("API returned empty URL")
+		return fmt.Errorf("no image URL returned from API")
+	}
+
+	logHandler("Successfully received image URL from API")
 
 	// Download the image
 	req, err := http.NewRequestWithContext(ctx, "GET", image.Data[0].URL, nil)
@@ -609,7 +724,7 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 }
 
 // handleSnapshot processes Snapshot widgets for handwriting recognition
-func handleSnapshot(update Update, client *canvusapi.Client) {
+func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config) {
 	start := time.Now()
 	downloadsMutex.Lock()
 	defer downloadsMutex.Unlock()
@@ -625,7 +740,7 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 	logHandler("- Size: %d,%d", int(triggerSize["width"].(float64)), int(triggerSize["height"].(float64)))
 
 	// Create processing note
-	processingNoteID, err := createProcessingNote(client, update)
+	processingNoteID, err := createProcessingNote(client, update, config)
 	if err != nil {
 		logHandler("Failed to create processing note: %v", err)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -654,14 +769,14 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 			for countdown := 3; countdown > 0; countdown-- {
 				updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 					"text": fmt.Sprintf("Download failed. Retrying in %d...", countdown),
-				})
+				}, config)
 				time.Sleep(time.Second)
 			}
 		}
 
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": fmt.Sprintf("Downloading snapshot... (Attempt %d/%d)", attempt, maxRetries),
-		})
+		}, config)
 
 		// Try to download
 		logHandler("Attempting to download image: %s", imageID)
@@ -695,7 +810,7 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 		logHandler("All download attempts failed for image ID %s: %v", imageID, downloadErr)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": "❌ Failed to download image after multiple attempts.\nClick the snapshot again to retry.",
-		})
+		}, config)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return // Keep snapshot
 	}
@@ -706,7 +821,7 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 		logHandler("Failed to read image data: %v", err)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": "❌ Failed to read image data.\nClick the snapshot again to retry.",
-		})
+		}, config)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		os.Remove(downloadPath)
 		return // Keep snapshot
@@ -715,7 +830,7 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 	logHandler("Successfully read image data - Size: %d bytes", len(imageData))
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "Processing image through OCR... Please wait.",
-	})
+	}, config)
 
 	// Perform OCR
 	ocrText, err := performGoogleVisionOCR(ctx, imageData)
@@ -731,7 +846,7 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": errorMessage,
-		})
+		}, config)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		os.Remove(downloadPath)
 		return // Keep snapshot
@@ -739,14 +854,14 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "Creating response note...",
-	})
+	}, config)
 
 	// Create response note
-	if err := createNoteFromResponse(ocrText, imageID, update, false, client); err != nil {
+	if err := createNoteFromResponse(ocrText, imageID, update, false, client, config); err != nil {
 		logHandler("Failed to create response note: %v", err)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": "❌ Failed to create response note.\nClick the snapshot again to retry.",
-		})
+		}, config)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		os.Remove(downloadPath)
 		return // Keep snapshot
@@ -779,19 +894,30 @@ func handleSnapshot(update Update, client *canvusapi.Client) {
 	logHandler("✅ Completed snapshot processing (took %v)", time.Since(start))
 }
 
+// getPDFChunkPrompt returns the system message for PDF chunk analysis
+func getPDFChunkPrompt() string {
+	return `You are analyzing a section of a document. Focus on:
+1. Main ideas and key points
+2. Important details and evidence
+3. Connections to other sections
+4. Technical accuracy and academic tone
+Format your response as: {"type": "text", "content": "your analysis"}`
+}
+
 // handlePDFPrecis generates a summary of a PDF widget
-func handlePDFPrecis(update Update, client *canvusapi.Client) {
+func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Config) {
 	start := time.Now()
 	parentID, _ := update["parent_id"].(string)
 
-	// Get parent widget (PDF) first to get its properties
+	pdfConfig := *config
+	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel
+
 	parentWidget, err := client.GetWidget(parentID, false)
 	if err != nil {
 		logHandler("❌ Failed to get parent PDF widget: %v", err)
 		return
 	}
 
-	// Log trigger widget (PDF) details
 	pdfLoc := parentWidget["location"].(map[string]interface{})
 	pdfSize := parentWidget["size"].(map[string]interface{})
 	logHandler("Trigger Widget Details (PDF) - Loc: %d,%d - Size: %d,%d - Scale: %d",
@@ -801,20 +927,17 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 		int(pdfSize["height"].(float64)),
 		int(parentWidget["scale"].(float64)))
 
-	// Verify it's a PDF widget
 	widgetType, _ := parentWidget["widget_type"].(string)
 	if strings.ToLower(widgetType) != "pdf" {
 		logHandler("❌ Invalid widget type for PDF precis: Expected PDF, got %s", widgetType)
 		return
 	}
 
-	// Use the PDF widget as the trigger widget instead of the AI icon
 	triggerWidget := make(Update)
 	for k, v := range parentWidget {
 		triggerWidget[k] = v
 	}
 
-	// Create processing note with properties based on PDF
 	processingNote := map[string]interface{}{
 		"title": "PDF Analysis",
 		"text":  "⚙️ Starting PDF analysis...",
@@ -832,7 +955,6 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 		"pinned":           true,
 	}
 
-	// Create the processing note
 	noteResp, err := client.CreateNote(processingNote)
 	if err != nil {
 		logHandler("❌ Failed to create processing note: %v", err)
@@ -840,7 +962,6 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 	}
 	processingNoteID := noteResp["id"].(string)
 
-	// Create context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), config.ProcessingTimeout)
 	defer cancel()
 
@@ -848,13 +969,13 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 	downloadPath := filepath.Join(config.DownloadsDir, fmt.Sprintf("temp_pdf_%s.pdf", parentID))
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "📥 Downloading PDF...",
-	})
+	}, config)
 
 	if err := client.DownloadPDF(parentID, downloadPath); err != nil {
 		logHandler("❌ Failed to download PDF: %v", err)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": "❌ Failed to download PDF",
-		})
+		}, config)
 		return
 	}
 	defer os.Remove(downloadPath)
@@ -862,80 +983,138 @@ func handlePDFPrecis(update Update, client *canvusapi.Client) {
 	// Extract text
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "📄 Extracting text from PDF...",
-	})
+	}, config)
 
 	pdfText, err := extractPDFText(downloadPath)
 	if err != nil {
 		logHandler("❌ PDF text extraction failed: %v", err)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": "❌ Failed to extract text from PDF",
-		})
+		}, config)
 		return
 	}
 
-	// Process content in chunks
+	// Split into chunks
 	chunks := splitIntoChunks(pdfText, int(config.PDFChunkSizeTokens))
 	totalChunks := len(chunks)
 
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": fmt.Sprintf("🔍 Analyzing PDF content...\nProcessing %d sections", totalChunks),
-	})
+		"text": fmt.Sprintf("🔍 Preparing %d PDF sections for analysis...", totalChunks),
+	}, config)
 
-	var summaries []string
-	for i, chunk := range chunks {
-		select {
-		case <-ctx.Done():
-			logHandler("❌ PDF processing timeout")
-			updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-				"text": "❌ Processing timeout - PDF too complex",
-			})
-			return
-		default:
-			updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-				"text": fmt.Sprintf("🔍 Analyzing section %d of %d...", i+1, totalChunks),
-			})
-
-			summary, err := generateAIResponse(ctx, chunk, getPDFChunkPrompt(), config.OpenAIPDFModel, config.PDFPrecisTokens)
-			if err != nil {
-				logHandler("❌ Chunk %d processing failed: %v", i+1, err)
-				updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-					"text": fmt.Sprintf("❌ Failed while processing section %d", i+1),
-				})
-				return
-			}
-			summaries = append(summaries, summary)
-		}
+	// Build message history for multi-chunk protocol
+	messages := []openai.ChatCompletionMessage{
+		{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: fmt.Sprintf("You will receive %d chunks of a document. Do not respond until you receive the final chunk. After the last chunk, I will prompt you for your analysis of the entire document.", totalChunks),
+		},
 	}
 
-	// Consolidate summaries
-	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": "📝 Creating final summary...",
+	for i, chunk := range chunks {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleUser,
+			Content: fmt.Sprintf("#--- chunk %d of %d ---#\n%s\n#--- end of chunk %d ---#", i+1, totalChunks, chunk, i+1),
+		})
+	}
+
+	// Final analysis prompt
+	finalPrompt := `You have now received all chunks. Please analyze the entire document and provide a summary in the following JSON format:
+{"type": "text", "content": "..."}
+The content field must be a Markdown-formatted summary with the following sections:
+# Overview
+# Key Points
+# Details
+# Conclusions
+
+Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.`
+	messages = append(messages, openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: finalPrompt,
 	})
 
-	finalSummary, err := consolidateSummaries(ctx, summaries)
+	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+		"text": "🤖 Generating final PDF analysis...",
+	}, config)
+
+	clientConfig := openai.DefaultConfig(pdfConfig.OpenAIAPIKey)
+	if pdfConfig.TextLLMURL != "" {
+		clientConfig.BaseURL = pdfConfig.TextLLMURL
+	} else if pdfConfig.BaseLLMURL != "" {
+		clientConfig.BaseURL = pdfConfig.BaseLLMURL
+	}
+	aiClient := openai.NewClientWithConfig(clientConfig)
+
+	resp, err := aiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model:       pdfConfig.OpenAINoteModel,
+		Messages:    messages,
+		MaxTokens:   int(pdfConfig.NoteResponseTokens),
+		Temperature: 0.3,
+	})
 	if err != nil {
-		logHandler("❌ Failed to consolidate summaries: %v", err)
+		logHandler("❌ PDF analysis failed: %v", err)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to create final summary",
-		})
+			"text": "❌ Failed to generate PDF analysis",
+		}, config)
+		return
+	}
+	if len(resp.Choices) == 0 {
+		logHandler("❌ No response choices returned from AI")
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": "❌ No response from AI",
+		}, config)
 		return
 	}
 
-	// Create final note with the summary, using the PDF widget as trigger
-	err = createNoteFromResponse(finalSummary, parentID, triggerWidget, false, client)
+	rawResponse := resp.Choices[0].Message.Content
+	startIdx := strings.Index(rawResponse, "{")
+	endIdx := strings.LastIndex(rawResponse, "}")
+	if startIdx == -1 || endIdx == -1 || startIdx > endIdx {
+		logHandler("❌ Response does not contain valid JSON: %s", rawResponse)
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": "❌ AI response was not valid JSON",
+		}, config)
+		return
+	}
+	jsonResponse := rawResponse[startIdx : endIdx+1]
+
+	var testParse map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
+		logHandler("❌ Invalid JSON in response: %v", err)
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": "❌ AI response was not valid JSON",
+		}, config)
+		return
+	}
+	if _, ok := testParse["type"].(string); !ok {
+		logHandler("❌ Response missing 'type' field")
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": "❌ AI response missing 'type' field",
+		}, config)
+		return
+	}
+	content, ok := testParse["content"].(string)
+	if !ok {
+		logHandler("❌ Response missing 'content' field")
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": "❌ AI response missing 'content' field",
+		}, config)
+		return
+	}
+	// Convert escaped newlines to actual newlines
+	content = strings.ReplaceAll(content, "\\n", "\n")
+
+	err = createNoteFromResponse(content, parentID, triggerWidget, false, client, config)
 	if err != nil {
 		logHandler("❌ Failed to create summary note: %v", err)
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": "❌ Failed to create summary note",
-		})
+		}, config)
 		return
 	}
 
-	// Delete the processing note and icon
 	deleteTriggeringWidget(client, "note", processingNoteID)
 	deleteTriggeringWidget(client, "image", update["id"].(string))
 
-	// Update metrics
 	atomic.AddInt64(&handlerMetrics.processedPDFs, 1)
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(start)
@@ -1010,18 +1189,37 @@ func splitIntoChunks(text string, maxChunkSize int) []string {
 	return chunks
 }
 
-func getPDFChunkPrompt() string {
-	return `Analyze this section of the document and provide a clear summary. Focus on:
-1. Main ideas and key points
-2. Important details and data
-3. Connections to other sections (if apparent)
-Maintain academic tone and technical accuracy.`
+func consolidateSummaries(ctx context.Context, summaries []string) (string, error) {
+	// Create a PDF-specific config that uses the PDF model
+	pdfConfig := *config                                 // Create a copy of the config
+	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel // Use PDF model for all AI calls
+
+	systemMessage := `You are tasked with combining multiple document summaries into a coherent final summary. 
+	Maintain key points and relationships between sections while eliminating redundancy.
+	Structure the output with clear sections:
+	# Overview
+	# Key Points
+	# Details
+	# Conclusions`
+
+	combinedSummaries := strings.Join(summaries, "\n---\n")
+	return generateAIResponse(combinedSummaries, &pdfConfig, systemMessage)
+}
+
+// estimateTokenCount provides a rough estimate of tokens in a text
+// Using average of 4 characters per token as a rough approximation
+func estimateTokenCount(text string) int {
+	return len(text) / 4
 }
 
 // handleCanvusPrecis processes Canvus widget summaries
-func handleCanvusPrecis(update Update, client *canvusapi.Client) {
+func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config) {
 	start := time.Now()
 	canvasID := update["id"].(string)
+
+	// Create a canvas-specific config that uses the canvas model
+	canvasConfig := *config                                       // Create a copy of the config
+	canvasConfig.OpenAINoteModel = canvasConfig.OpenAICanvasModel // Use canvas model for all AI calls
 
 	// Validate update
 	if err := validateUpdate(update); err != nil {
@@ -1098,6 +1296,10 @@ func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client) ([]map[st
 func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}) error {
 	logHandler("Starting Canvus Precis processing")
 
+	// Create a canvas-specific config that uses the canvas model
+	canvasConfig := *config                                       // Create a copy of the config
+	canvasConfig.OpenAINoteModel = canvasConfig.OpenAICanvasModel // Use canvas model for all AI calls
+
 	// Log trigger widget details
 	triggerLoc := update["location"].(map[string]interface{})
 	triggerSize := update["size"].(map[string]interface{})
@@ -1149,7 +1351,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	// Update processing status
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "🔍 Analyzing canvas content...\nProcessing " + strconv.Itoa(len(filteredWidgets)) + " widgets",
-	})
+	}, config)
 
 	// Convert filtered widgets to JSON for AI processing
 	widgetsJSON, err := json.Marshal(filteredWidgets)
@@ -1163,22 +1365,24 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	Describe the content and relationships between items in a natural, narrative way. 
 	Focus on the story the workspace is telling and how items relate to each other. 
 	Avoid mentioning technical details like IDs or coordinates. 
-	Format your response in markdown with two sections: 
+	Format your response as text using markdown with three sections: 
 	# Overview
 	Describe the main themes and content of the workspace.
 	# Insights
-	Share observations about relationships between items and suggest next steps.`
+	Share observations about relationships between items and suggest next steps.
+	# Recommendations
+	Provide actionable recommendations for improving the workspace.`
 
 	// Update processing status
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "🤖 Generating canvas analysis...\nThis may take a moment.",
-	})
+	}, config)
 
 	// Generate AI response
-	rawResponse, err := generateAIResponse(ctx, string(widgetsJSON), systemMessage, config.OpenAICanvasModel, config.CanvasPrecisTokens)
+	rawResponse, err := generateAIResponse(string(widgetsJSON), &canvasConfig, systemMessage)
 	if err != nil {
 		deleteTriggeringWidget(client, "note", processingNoteID)
-		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string))
+		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string), config)
 	}
 
 	// Calculate note size based on content
@@ -1212,7 +1416,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	}
 
 	// Create response note
-	err = createNoteFromResponse(rawResponse, update["id"].(string), update, false, client)
+	err = createNoteFromResponse(rawResponse, update["id"].(string), update, false, client, config)
 	if err != nil {
 		deleteTriggeringWidget(client, "note", processingNoteID)
 		return fmt.Errorf("failed to create response note: %w", err)
@@ -1275,7 +1479,7 @@ func CleanupDownloads() error {
 }
 
 // handleAIError creates a friendly error note, clears processing text, and logs the error
-func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string) error {
+func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string, config *core.Config) error {
 	logHandler("❌ AI Processing Error: %v", err)
 
 	errorMessage := `# AI Processing Error
@@ -1294,10 +1498,10 @@ I apologize, but I encountered an error while processing your request.
 	errorContent := fmt.Sprintf(errorMessage, err)
 
 	// Create error note using fixed size and positioning
-	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client)
+	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client, config)
 
 	// Clear the extra processing text from the original note
-	clearProcessingStatus(client, update["id"].(string), baseText)
+	clearProcessingStatus(client, update["id"].(string), baseText, config)
 
 	return errResp
 }
@@ -1330,25 +1534,6 @@ func chunkPDFContent(content []byte, maxTokens int) []string {
 	return chunks
 }
 
-func consolidateSummaries(ctx context.Context, summaries []string) (string, error) {
-	systemPrompt := `You are tasked with combining multiple document summaries into a coherent final summary. 
-	Maintain key points and relationships between sections while eliminating redundancy.
-	Structure the output with clear sections:
-	# Overview
-	# Key Points
-	# Details
-	# Conclusions`
-
-	combinedSummaries := strings.Join(summaries, "\n---\n")
-	return generateAIResponse(ctx, combinedSummaries, systemPrompt, config.OpenAIPDFModel, config.PDFPrecisTokens*2)
-}
-
-// estimateTokenCount provides a rough estimate of tokens in a text
-// Using average of 4 characters per token as a rough approximation
-func estimateTokenCount(text string) int {
-	return len(text) / 4
-}
-
 // handleAIIcon processes AI icon updates
 func (m *Monitor) handleAIIcon(update Update) error {
 	title, _ := update["title"].(string)
@@ -1363,14 +1548,14 @@ func (m *Monitor) handleAIIcon(update Update) error {
 		}
 
 		// Process the PDF once the icon is placed on a PDF widget
-		go handlePDFPrecis(update, m.client)
+		go handlePDFPrecis(update, m.client, m.config)
 
 	case "AI_Icon_Canvus_Precis":
 		// For canvas precis, we want the parent to be the shared canvas
 		if parentID != sharedCanvas.ID {
 			return fmt.Errorf("AI_Icon_Canvus_Precis ParentID does not match SharedCanvasID")
 		}
-		go handleCanvusPrecis(update, m.client)
+		go handleCanvusPrecis(update, m.client, m.config)
 
 	default:
 		color.Blue("Unrecognized AI_Icon type: %s", title)
@@ -1379,8 +1564,8 @@ func (m *Monitor) handleAIIcon(update Update) error {
 }
 
 // Helper function to create processing notes (reduces duplication)
-func createProcessingNote(client *canvusapi.Client, update Update) (string, error) {
-	absoluteLoc, err := getAbsoluteLocation(client, update)
+func createProcessingNote(client *canvusapi.Client, update Update, config *core.Config) (string, error) {
+	absoluteLoc, err := getAbsoluteLocation(client, update, config)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute location: %w", err)
 	}
@@ -1414,7 +1599,7 @@ func cleanup(client *canvusapi.Client, processingNoteID, imageID, downloadPath s
 			// Try to update the note instead of deleting if delete fails
 			updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 				"text": "❌ Process completed with errors.\nYou can delete this note.",
-			})
+			}, config)
 		}
 	}
 
