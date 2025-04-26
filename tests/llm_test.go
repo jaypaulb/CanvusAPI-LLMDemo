@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"go_backend/core"
-	"go_backend/llm"
 )
 
 func TestLocalLLMConnection(t *testing.T) {
@@ -26,7 +25,6 @@ func TestLocalLLMConnection(t *testing.T) {
 	// Create core config with required fields for LLM
 	cfg := &core.Config{
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
-		OpenAIAPIBaseURL:   os.Getenv("OPENAI_API_BASE_URL"),
 		OpenAINoteModel:    "gpt-3.5-turbo",
 		NoteResponseTokens: 100,
 		MaxRetries:         3,
@@ -37,7 +35,7 @@ func TestLocalLLMConnection(t *testing.T) {
 	// Test AI response generation
 	prompt := "What is 2+2? Please respond with just the number."
 	ctx := context.Background()
-	response, err := llm.GenerateAIResponse(ctx, cfg, prompt)
+	response, err := core.TestAIResponse(ctx, cfg, prompt)
 	if err != nil {
 		t.Fatalf("Failed to generate AI response: %v", err)
 	}

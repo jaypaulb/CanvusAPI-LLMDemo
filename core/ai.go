@@ -7,8 +7,8 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
-// GenerateAIResponse generates a response using the OpenAI API
-func GenerateAIResponse(ctx context.Context, cfg *Config, prompt string) (string, error) {
+// TestAIResponse generates a response using the OpenAI API
+func TestAIResponse(ctx context.Context, cfg *Config, prompt string) (string, error) {
 	client := createOpenAIClient(cfg)
 
 	resp, err := client.CreateChatCompletion(
