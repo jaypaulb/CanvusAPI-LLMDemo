@@ -1244,7 +1244,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	}
 
 	// Fetch all widgets from the canvas
-	widgets, err := fetchCanvasWidgets(ctx, client)
+	widgets, err := fetchCanvasWidgets(ctx, client, config)
 	if err != nil {
 		logHandler("Failed to fetch widgets for Canvus precis: %v", err)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
@@ -1252,7 +1252,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	}
 
 	// Generate and process the precis
-	if err := processCanvusPrecis(ctx, client, update, widgets); err != nil {
+	if err := processCanvusPrecis(ctx, client, update, widgets, config); err != nil {
 		logHandler("Failed to process Canvus precis: ID=%s, Error=%v", canvasID, err)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
@@ -1270,7 +1270,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 }
 
 // fetchCanvasWidgets retrieves all widgets with retry logic
-func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client) ([]map[string]interface{}, error) {
+func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *core.Config) ([]map[string]interface{}, error) {
 	var widgets []map[string]interface{}
 	var lastErr error
 
@@ -1293,7 +1293,7 @@ func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client) ([]map[st
 }
 
 // processCanvusPrecis generates and creates a summary of the canvas
-func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}) error {
+func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config) error {
 	logHandler("Starting Canvus Precis processing")
 
 	// Create a canvas-specific config that uses the canvas model
@@ -1385,38 +1385,22 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string), config)
 	}
 
-	// Calculate note size based on content
-	contentLength := len(rawResponse)
-	baseWidth := 600.0  // Wider base width for canvas analysis
-	baseHeight := 400.0 // Taller base height for canvas analysis
-
-	// Assume ~60 chars per line, ~25 lines visible at default scale
-	charsPerLine := 60.0
-	linesNeeded := float64(contentLength) / charsPerLine
-	sizeRatio := math.Sqrt(linesNeeded / 25.0)
-
-	// Limit size increase
-	width := baseWidth * math.Max(1.0, math.Min(2.0, sizeRatio))
-	height := baseHeight * math.Max(1.0, math.Min(2.0, sizeRatio))
-
-	// Calculate scale - inverse to size increase
-	scale := update["scale"].(float64)
-	if width > baseWidth {
-		scale = scale * (baseWidth / width)
+	// Parse the AI response JSON and extract the content field
+	var aiResponse map[string]interface{}
+	if err := json.Unmarshal([]byte(rawResponse), &aiResponse); err != nil {
+		deleteTriggeringWidget(client, "note", processingNoteID)
+		return fmt.Errorf("failed to parse AI response JSON: %w", err)
 	}
-
-	// Log size calculations for tuning
-	logHandler("Response Note size calculation: content_length=%d, size_ratio=%.2f, final_size=%.2f x %.2f, scale=%.2f",
-		contentLength, sizeRatio, width, height, scale)
-
-	// Update the location for the response note
-	update["location"] = map[string]interface{}{
-		"x": iconLoc["x"].(float64) + 100.0,
-		"y": iconLoc["y"].(float64) + 100.0,
+	content, ok := aiResponse["content"].(string)
+	if !ok {
+		deleteTriggeringWidget(client, "note", processingNoteID)
+		return fmt.Errorf("AI response missing 'content' field")
 	}
+	// Convert escaped newlines to actual newlines
+	content = strings.ReplaceAll(content, "\\n", "\n")
 
 	// Create response note
-	err = createNoteFromResponse(rawResponse, update["id"].(string), update, false, client, config)
+	err = createNoteFromResponse(content, update["id"].(string), update, false, client, config)
 	if err != nil {
 		deleteTriggeringWidget(client, "note", processingNoteID)
 		return fmt.Errorf("failed to create response note: %w", err)
