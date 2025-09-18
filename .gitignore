@@ -42,4 +42,14 @@ tmp/
 
 # Backup files
 *.bak
-*~ 
+*~
+
+# Cursor rules
+.cursor/rules/
+.cursor/rules.md
+.cursor/rules.json
+.cursor/rules.jsonc
+.cursor/rules.jsonl
+.cursor/rules.jsonl
+.cursor/
+.cursorrules
