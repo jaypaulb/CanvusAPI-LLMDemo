@@ -192,7 +192,9 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 			"text": baseText + "\n\n📝 Generating text response...",
 		}, config)
 		logHandler("📝 Creating text response for Note: ID=%s", noteID)
-		creationErr = createNoteFromResponse(aiNoteResponse.Content, noteID, update, false, client, config)
+		// Convert escaped newlines to actual newlines
+		content := strings.ReplaceAll(aiNoteResponse.Content, "\\n", "\n")
+		creationErr = createNoteFromResponse(content, noteID, update, false, client, config)
 
 	case "image":
 		// For image generation, provide more detailed progress updates
@@ -651,7 +653,7 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 		ResponseFormat: openai.CreateImageResponseFormatURL,
 		N:              1,
 	}
-	
+
 	// Only add style parameter for DALL-E 3 (not supported by DALL-E 2)
 	if model == "dall-e-3" {
 		imageReq.Style = openai.CreateImageStyleVivid
