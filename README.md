@@ -65,7 +65,7 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
      - Mistral: `mistral`
      - CodeLlama: `codellama`
      - Or your custom model name
-     
+
      **Image Generation Models**:
      - `dall-e-3`: Latest model with higher quality and better prompt understanding (default)
      - `dall-e-2`: Previous generation model, faster and more cost-effective
@@ -90,12 +90,12 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    BASE_LLM_URL=http://localhost:8000/v1
    TEXT_LLM_URL=http://localhost:8000/v1
    IMAGE_LLM_URL=https://api.openai.com/v1
-   
+
    OPENAI_NOTE_MODEL=llama2
    OPENAI_CANVAS_MODEL=llama2
    OPENAI_PDF_MODEL=llama2
    IMAGE_GEN_MODEL=dall-e-3
-   
+
    # Adjust token limits for local LLM
    OPENAI_PDF_PRECIS_TOKENS=2000      # Increase for more detailed PDF analysis
    OPENAI_CANVAS_PRECIS_TOKENS=800    # Increase for more detailed canvas analysis
