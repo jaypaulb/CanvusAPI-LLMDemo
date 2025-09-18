@@ -644,13 +644,20 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 
 	logHandler("Using image generation model: %s", model)
 
-	image, err := aiClient.CreateImage(ctx, openai.ImageRequest{
+	// Create image request with model-specific parameters
+	imageReq := openai.ImageRequest{
 		Prompt:         prompt,
 		Model:          model,
 		ResponseFormat: openai.CreateImageResponseFormatURL,
-		Style:          openai.CreateImageStyleVivid,
 		N:              1,
-	})
+	}
+	
+	// Only add style parameter for DALL-E 3 (not supported by DALL-E 2)
+	if model == "dall-e-3" {
+		imageReq.Style = openai.CreateImageStyleVivid
+	}
+
+	image, err := aiClient.CreateImage(ctx, imageReq)
 	if err != nil {
 		return fmt.Errorf("failed to generate AI image: %w", err)
 	}
