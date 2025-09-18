@@ -38,12 +38,15 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    **OpenAI Configuration**:
    The application provides flexible configuration options for OpenAI integration:
 
-   - **API Base URL**:
+   - **API Base URLs**:
      ```
-     OPENAI_API_BASE_URL=https://api.openai.com/v1
+     BASE_LLM_URL=http://127.0.0.1:1234/v1    # Default for all LLM operations
+     TEXT_LLM_URL=                            # Optional override for text generation
+     IMAGE_LLM_URL=https://api.openai.com/v1  # Default for image generation
      ```
-     - Default: `https://api.openai.com/v1`
-     - Use this to specify a custom OpenAI API endpoint
+     - `BASE_LLM_URL`: Default endpoint for all LLM operations
+     - `TEXT_LLM_URL`: Optional override for text generation (if not set, uses BASE_LLM_URL)
+     - `IMAGE_LLM_URL`: Defaults to OpenAI API for image generation
      - Common local LLM server endpoints:
        - LLaMA server: `http://localhost:8000/v1`
        - Ollama server: `http://localhost:11434/v1`
@@ -55,12 +58,17 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
      OPENAI_NOTE_MODEL=gpt-3.5-turbo    # For processing notes and basic AI interactions
      OPENAI_CANVAS_MODEL=gpt-4          # For analyzing entire canvas content
      OPENAI_PDF_MODEL=gpt-4             # For PDF document analysis
+     IMAGE_GEN_MODEL=dall-e-3           # For image generation (dall-e-3 or dall-e-2)
      ```
      For local LLMs, use the model names as configured in your server:
      - LLaMA 2: `llama2`
      - Mistral: `mistral`
      - CodeLlama: `codellama`
      - Or your custom model name
+     
+     **Image Generation Models**:
+     - `dall-e-3`: Latest model with higher quality and better prompt understanding (default)
+     - `dall-e-2`: Previous generation model, faster and more cost-effective
 
    - **Token Limits**:
      Configure token limits for different operations:
@@ -78,11 +86,15 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
 
    You can adjust these values based on your needs. For example:
    ```
-   # Using local LLaMA server
-   OPENAI_API_BASE_URL=http://localhost:8000/v1
+   # Using local LLaMA server for text, OpenAI for images
+   BASE_LLM_URL=http://localhost:8000/v1
+   TEXT_LLM_URL=http://localhost:8000/v1
+   IMAGE_LLM_URL=https://api.openai.com/v1
+   
    OPENAI_NOTE_MODEL=llama2
    OPENAI_CANVAS_MODEL=llama2
    OPENAI_PDF_MODEL=llama2
+   IMAGE_GEN_MODEL=dall-e-3
    
    # Adjust token limits for local LLM
    OPENAI_PDF_PRECIS_TOKENS=2000      # Increase for more detailed PDF analysis
@@ -171,6 +183,8 @@ If you prefer not to build the program from source and just want to run it, you 
 4. **Image Generation**:
    - Include an image generation prompt in your note: `{{Generate an image of a sunset}}`
    - The system will create and place the generated image on your canvas
+   - Configure the image model using `IMAGE_GEN_MODEL` (dall-e-3 or dall-e-2)
+   - Set `IMAGE_LLM_URL` to specify the image generation endpoint (defaults to OpenAI API)
 
 5. **Custom Menu Integration**:
    The application provides two special icons for your Canvus custom menu:

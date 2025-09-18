@@ -31,6 +31,7 @@ type Config struct {
 	OpenAINoteModel   string
 	OpenAICanvasModel string
 	OpenAIPDFModel    string
+	OpenAIImageModel  string
 
 	// Token Limits
 	PDFPrecisTokens       int64
@@ -101,12 +102,13 @@ func LoadConfig() (*Config, error) {
 	// Load LLM URLs
 	baseLLMURL := getEnvOrDefault("BASE_LLM_URL", "http://127.0.0.1:1234/v1")
 	textLLMURL := os.Getenv("TEXT_LLM_URL")   // Optional override
-	imageLLMURL := os.Getenv("IMAGE_LLM_URL") // Optional override
+	imageLLMURL := getEnvOrDefault("IMAGE_LLM_URL", "https://api.openai.com/v1") // Default to OpenAI for image generation
 
 	// Load model names
 	noteModel := getEnvOrDefault("OPENAI_NOTE_MODEL", "gpt-4")
 	canvasModel := getEnvOrDefault("OPENAI_CANVAS_MODEL", "gpt-4")
 	pdfModel := getEnvOrDefault("OPENAI_PDF_MODEL", "gpt-4")
+	imageModel := getEnvOrDefault("IMAGE_GEN_MODEL", "dall-e-3")
 
 	// Load token limits with standardized default values
 	pdfPrecisTokens := parseInt64Env("OPENAI_PDF_PRECIS_TOKENS", 1000)
@@ -172,6 +174,7 @@ func LoadConfig() (*Config, error) {
 		OpenAINoteModel:   noteModel,
 		OpenAICanvasModel: canvasModel,
 		OpenAIPDFModel:    pdfModel,
+		OpenAIImageModel:  imageModel,
 
 		// Token Limits
 		PDFPrecisTokens:       pdfPrecisTokens,

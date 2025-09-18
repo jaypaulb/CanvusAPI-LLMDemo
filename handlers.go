@@ -636,9 +636,17 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 	// Log the image request details
 	logHandler("Creating image with prompt: %s", prompt)
 
+	// Use the configured image model
+	model := config.OpenAIImageModel
+	if model == "" {
+		model = "dall-e-3" // Default fallback
+	}
+
+	logHandler("Using image generation model: %s", model)
+
 	image, err := aiClient.CreateImage(ctx, openai.ImageRequest{
 		Prompt:         prompt,
-		Model:          openai.CreateImageModelDallE3,
+		Model:          model,
 		ResponseFormat: openai.CreateImageResponseFormatURL,
 		Style:          openai.CreateImageStyleVivid,
 		N:              1,
@@ -1194,7 +1202,7 @@ func consolidateSummaries(ctx context.Context, summaries []string) (string, erro
 	pdfConfig := *config                                 // Create a copy of the config
 	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel // Use PDF model for all AI calls
 
-	systemMessage := `You are tasked with combining multiple document summaries into a coherent final summary. 
+	systemMessage := `You are tasked with combining multiple document summaries into a coherent final summary.
 	Maintain key points and relationships between sections while eliminating redundancy.
 	Structure the output with clear sections:
 	# Overview
@@ -1361,11 +1369,11 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	}
 
 	// Configure system message for canvas analysis
-	systemMessage := `You are an assistant analyzing a collaborative workspace. 
-	Describe the content and relationships between items in a natural, narrative way. 
-	Focus on the story the workspace is telling and how items relate to each other. 
-	Avoid mentioning technical details like IDs or coordinates. 
-	Format your response as text using markdown with three sections: 
+	systemMessage := `You are an assistant analyzing a collaborative workspace.
+	Describe the content and relationships between items in a natural, narrative way.
+	Focus on the story the workspace is telling and how items relate to each other.
+	Avoid mentioning technical details like IDs or coordinates.
+	Format your response as text using markdown with three sections:
 	# Overview
 	Describe the main themes and content of the workspace.
 	# Insights
