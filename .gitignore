@@ -38,6 +38,7 @@ tmp/
 # Generated files
 *.generated.go
 *_string.go
+*_canvas.json
 
 # Backup files
 *.bak

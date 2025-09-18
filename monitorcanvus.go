@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go_backend/canvusapi"
+	"go_backend/core"
 
 	"github.com/fatih/color"
 )
@@ -18,7 +19,7 @@ import (
 // Monitor represents the canvas monitoring service
 type Monitor struct {
 	client     *canvusapi.Client
-	config     *Config
+	config     *core.Config
 	done       chan struct{}
 	widgets    map[string]map[string]interface{}
 	widgetsMux sync.RWMutex
@@ -45,10 +46,7 @@ type SharedCanvas struct {
 var sharedCanvas SharedCanvas
 
 // NewMonitor creates a new Monitor instance
-func NewMonitor(client *canvusapi.Client, cfg *Config) *Monitor {
-	// Set the package-level config variable
-	config = cfg
-
+func NewMonitor(client *canvusapi.Client, cfg *core.Config) *Monitor {
 	return &Monitor{
 		client:     client,
 		config:     cfg,
@@ -265,11 +263,11 @@ func (m *Monitor) saveSharedCanvasData(data Update) error {
 func (m *Monitor) routeUpdate(update Update) error {
 	switch update["widget_type"].(string) {
 	case "Note":
-		go handleNote(update, m.client)
+		go handleNote(update, m.client, m.config)
 	case "Image":
 		if title, ok := update["title"].(string); ok {
 			if strings.HasPrefix(title, "Snapshot at") {
-				go handleSnapshot(update, m.client)
+				go handleSnapshot(update, m.client, m.config)
 			} else if strings.HasPrefix(title, "AI_Icon_") {
 				return m.handleAIIcon(update)
 			}

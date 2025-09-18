@@ -11,11 +11,13 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
   - Canvas Content Analysis
   - Image Generation
   - Handwriting Recognition (via Google Vision API)
+- **Flexible OpenAI Integration**: Support for custom OpenAI API endpoints and model configurations
+- **Local LLM Support**: Compatible with local LLM servers like LLaMA, Ollama, and LM Studio
 
 ## Prerequisites
 
 - A Canvus Server instance
-- OpenAI API key
+- OpenAI API key (or local LLM server)
 - Google Vision API key (optional, for handwriting recognition)
 - Go programming environment
 
@@ -33,25 +35,68 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    ALLOW_SELF_SIGNED_CERTS=false  # Set to true only for development/testing with self-signed certificates
    ```
 
-   **OpenAI Model Configuration**:
-   The application uses different OpenAI models for different tasks:
-   - `OPENAI_NOTE_MODEL`: For processing notes and basic AI interactions (default: gpt-3.5-turbo)
-   - `OPENAI_CANVAS_MODEL`: For analyzing entire canvas content (default: gpt-4)
-   - `OPENAI_PDF_MODEL`: For PDF document analysis (default: gpt-4)
+   **OpenAI Configuration**:
+   The application provides flexible configuration options for OpenAI integration:
 
-   **OpenAI Token Limits**:
-   The application allows you to configure token limits for different operations:
-   - `OPENAI_PDF_PRECIS_TOKENS`: Token limit for PDF analysis (default: 1000)
-   - `OPENAI_CANVAS_PRECIS_TOKENS`: Token limit for canvas analysis (default: 600)
-   - `OPENAI_NOTE_RESPONSE_TOKENS`: Token limit for note responses (default: 400)
-   - `OPENAI_IMAGE_ANALYSIS_TOKENS`: Token limit for image descriptions (default: 16384)
-   - `OPENAI_ERROR_RESPONSE_TOKENS`: Token limit for error messages (default: 200)
-   - `OPENAI_PDF_CHUNK_SIZE_TOKENS`: Size of individual PDF chunks (default: 20000)
-   - `OPENAI_PDF_MAX_CHUNKS_TOKENS`: Maximum number of PDF chunks to process (default: 10)
-   - `OPENAI_PDF_SUMMARY_RATIO`: Target ratio of summary to original length (default: 0.3)
+   - **API Base URLs**:
+     ```
+     BASE_LLM_URL=http://127.0.0.1:1234/v1    # Default for all LLM operations
+     TEXT_LLM_URL=                            # Optional override for text generation
+     IMAGE_LLM_URL=https://api.openai.com/v1  # Default for image generation
+     ```
+     - `BASE_LLM_URL`: Default endpoint for all LLM operations
+     - `TEXT_LLM_URL`: Optional override for text generation (if not set, uses BASE_LLM_URL)
+     - `IMAGE_LLM_URL`: Defaults to OpenAI API for image generation
+     - Common local LLM server endpoints:
+       - LLaMA server: `http://localhost:8000/v1`
+       - Ollama server: `http://localhost:11434/v1`
+       - LM Studio server: `http://localhost:1234/v1`
+
+   - **Model Selection**:
+     The application uses different OpenAI models for different tasks:
+     ```
+     OPENAI_NOTE_MODEL=gpt-3.5-turbo    # For processing notes and basic AI interactions
+     OPENAI_CANVAS_MODEL=gpt-4          # For analyzing entire canvas content
+     OPENAI_PDF_MODEL=gpt-4             # For PDF document analysis
+     IMAGE_GEN_MODEL=dall-e-3           # For image generation (dall-e-3 or dall-e-2)
+     ```
+     For local LLMs, use the model names as configured in your server:
+     - LLaMA 2: `llama2`
+     - Mistral: `mistral`
+     - CodeLlama: `codellama`
+     - Or your custom model name
+
+     **Image Generation Models**:
+     - `dall-e-3`: Latest model with higher quality and better prompt understanding (default)
+     - `dall-e-2`: Previous generation model, faster and more cost-effective
+
+   - **Token Limits**:
+     Configure token limits for different operations:
+     ```
+     OPENAI_PDF_PRECIS_TOKENS=1000      # Token limit for PDF analysis
+     OPENAI_CANVAS_PRECIS_TOKENS=600    # Token limit for canvas analysis
+     OPENAI_NOTE_RESPONSE_TOKENS=400    # Token limit for note responses
+     OPENAI_IMAGE_ANALYSIS_TOKENS=16384 # Token limit for image descriptions
+     OPENAI_ERROR_RESPONSE_TOKENS=200   # Token limit for error messages
+     OPENAI_PDF_CHUNK_SIZE_TOKENS=20000 # Size of individual PDF chunks
+     OPENAI_PDF_MAX_CHUNKS_TOKENS=10    # Maximum number of PDF chunks
+     OPENAI_PDF_SUMMARY_RATIO=0.3       # Target summary ratio
+     ```
+     Note: Local LLMs may have different token limits, adjust accordingly
 
    You can adjust these values based on your needs. For example:
    ```
+   # Using local LLaMA server for text, OpenAI for images
+   BASE_LLM_URL=http://localhost:8000/v1
+   TEXT_LLM_URL=http://localhost:8000/v1
+   IMAGE_LLM_URL=https://api.openai.com/v1
+
+   OPENAI_NOTE_MODEL=llama2
+   OPENAI_CANVAS_MODEL=llama2
+   OPENAI_PDF_MODEL=llama2
+   IMAGE_GEN_MODEL=dall-e-3
+
+   # Adjust token limits for local LLM
    OPENAI_PDF_PRECIS_TOKENS=2000      # Increase for more detailed PDF analysis
    OPENAI_CANVAS_PRECIS_TOKENS=800    # Increase for more detailed canvas analysis
    OPENAI_NOTE_RESPONSE_TOKENS=600    # Increase for longer note responses
@@ -138,6 +183,8 @@ If you prefer not to build the program from source and just want to run it, you 
 4. **Image Generation**:
    - Include an image generation prompt in your note: `{{Generate an image of a sunset}}`
    - The system will create and place the generated image on your canvas
+   - Configure the image model using `IMAGE_GEN_MODEL` (dall-e-3 or dall-e-2)
+   - Set `IMAGE_LLM_URL` to specify the image generation endpoint (defaults to OpenAI API)
 
 5. **Custom Menu Integration**:
    The application provides two special icons for your Canvus custom menu:

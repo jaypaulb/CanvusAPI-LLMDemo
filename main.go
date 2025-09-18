@@ -6,113 +6,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
-	"time"
 
 	"go_backend/canvusapi"
+	"go_backend/core"
 
 	"github.com/joho/godotenv"
 )
-
-// loadConfig loads and validates configuration from environment
-func loadConfig() (*Config, error) {
-	envPath := ".env"
-	if err := godotenv.Load(envPath); err != nil {
-		log.Printf("❌ Error loading .env file from %s: %v", envPath, err)
-		return nil, fmt.Errorf("error loading .env file: %w", err)
-	}
-
-	log.Println("✅ Successfully loaded .env file")
-
-	// Parse token limits with defaults
-	pdfPrecisTokens := parseInt64Env("OPENAI_PDF_PRECIS_TOKENS", 1000)
-	canvasPrecisTokens := parseInt64Env("OPENAI_CANVAS_PRECIS_TOKENS", 600)
-	noteResponseTokens := parseInt64Env("OPENAI_NOTE_RESPONSE_TOKENS", 400)
-	imageAnalysisTokens := parseInt64Env("OPENAI_IMAGE_ANALYSIS_TOKENS", 16384)
-	errorResponseTokens := parseInt64Env("OPENAI_ERROR_RESPONSE_TOKENS", 200)
-	pdfChunkSizeTokens := parseInt64Env("OPENAI_PDF_CHUNK_SIZE_TOKENS", 20000)
-	pdfMaxChunksTokens := parseInt64Env("OPENAI_PDF_MAX_CHUNKS_TOKENS", 10)
-	pdfSummaryRatioTokens := parseFloat64Env("OPENAI_PDF_SUMMARY_RATIO", 0.3)
-
-	config := &Config{
-		MaxRetries:        3,
-		RetryDelay:        time.Second,
-		AITimeout:         30 * time.Second,
-		DownloadsDir:      "./downloads",
-		MaxConcurrent:     5,
-		ProcessingTimeout: 5 * time.Minute,
-		MaxFileSize:       50 * 1024 * 1024,
-		GoogleVisionKey:   os.Getenv("GOOGLE_VISION_API_KEY"),
-		CanvusServer:      os.Getenv("CANVUS_SERVER"),
-		CanvasID:          os.Getenv("CANVAS_ID"),
-		CanvusAPIKey:      os.Getenv("CANVUS_API_KEY"),
-		OpenAIKey:         os.Getenv("OPENAI_API_KEY"),
-		OpenAINoteModel:   os.Getenv("OPENAI_NOTE_MODEL"),
-		OpenAICanvasModel: os.Getenv("OPENAI_CANVAS_MODEL"),
-		OpenAIPDFModel:    os.Getenv("OPENAI_PDF_MODEL"),
-		// Token limits
-		PDFPrecisTokens:       pdfPrecisTokens,
-		CanvasPrecisTokens:    canvasPrecisTokens,
-		NoteResponseTokens:    noteResponseTokens,
-		ImageAnalysisTokens:   imageAnalysisTokens,
-		ErrorResponseTokens:   errorResponseTokens,
-		PDFChunkSizeTokens:    pdfChunkSizeTokens,
-		PDFMaxChunksTokens:    pdfMaxChunksTokens,
-		PDFSummaryRatioTokens: pdfSummaryRatioTokens,
-	}
-
-	// Validate required fields with detailed logging
-	missingVars := []string{}
-	if config.CanvusServer == "" {
-		log.Println("❌ Missing environment variable: CANVUS_SERVER")
-		missingVars = append(missingVars, "CANVUS_SERVER")
-	}
-	if config.CanvasID == "" {
-		log.Println("❌ Missing environment variable: CANVAS_ID")
-		missingVars = append(missingVars, "CANVAS_ID")
-	}
-	if config.CanvusAPIKey == "" {
-		log.Println("❌ Missing environment variable: CANVUS_API_KEY")
-		missingVars = append(missingVars, "CANVUS_API_KEY")
-	}
-	if config.OpenAIKey == "" {
-		log.Println("❌ Missing environment variable: OPENAI_API_KEY")
-		missingVars = append(missingVars, "OPENAI_API_KEY")
-	}
-	if config.GoogleVisionKey == "" {
-		log.Println("❌ Missing environment variable: GOOGLE_VISION_API_KEY")
-		missingVars = append(missingVars, "GOOGLE_VISION_API_KEY")
-	}
-
-	if len(missingVars) > 0 {
-		errorMsg := fmt.Sprintf("❌ Missing required environment variables: %v", missingVars)
-		log.Println(errorMsg)
-		return nil, fmt.Errorf(errorMsg)
-	}
-
-	log.Println("✅ All required environment variables found")
-	return config, nil
-}
-
-// Helper functions to parse environment variables
-func parseInt64Env(key string, defaultValue int64) int64 {
-	if value := os.Getenv(key); value != "" {
-		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
-}
-
-func parseFloat64Env(key string, defaultValue float64) float64 {
-	if value := os.Getenv(key); value != "" {
-		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
-}
 
 // setupLogging initializes application logging
 func setupLogging() (*os.File, error) {
@@ -126,77 +26,67 @@ func setupLogging() (*os.File, error) {
 }
 
 func main() {
-	// Load environment variables from .env in the project root
-	if err := godotenv.Load(".env"); err != nil {
-		log.Printf("❌ Failed to load .env file from .env: %v\n", err)
-		fmt.Printf("❌ Failed to load .env file from .env: %v\n", err)
-		os.Exit(1)
+	// Load .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found: %v", err)
 	}
 
-	// Setup logging
+	// Load configuration
+	config, err := core.LoadConfig()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Initialize logging
 	logFile, err := setupLogging()
 	if err != nil {
-		fmt.Printf("Failed to setup logging: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to initialize logging: %v", err)
 	}
 	defer logFile.Close()
 
-	// Load configuration
-	cfg, err := loadConfig()
-	if err != nil {
-		log.Printf("❌ Failed to load configuration: %v", err)
-		fmt.Printf("❌ Failed to load configuration: %v\n", err)
-		fmt.Println("👉 Please ensure your .env file exists and contains all required variables")
-		os.Exit(1)
-	}
+	// Log configuration values
+	fmt.Printf("📝 Configuration loaded:\n")
+	fmt.Printf("  Server: %s\n", config.CanvusServerURL)
+	fmt.Printf("  Canvas: %s (ID: %s)\n", config.CanvasName, config.CanvasID)
+	fmt.Printf("  Max Retries: %d\n", config.MaxRetries)
+	fmt.Printf("  Retry Delay: %v\n", config.RetryDelay)
+	fmt.Printf("  AI Timeout: %v\n", config.AITimeout)
+	fmt.Printf("  Processing Timeout: %v\n", config.ProcessingTimeout)
+	fmt.Printf("  Max Concurrent: %d\n", config.MaxConcurrent)
+	fmt.Printf("  Downloads Directory: %s\n", config.DownloadsDir)
+	fmt.Printf("  Allow Self-Signed Certs: %v\n", config.AllowSelfSignedCerts)
 
 	// Create downloads directory
-	if err := os.MkdirAll(cfg.DownloadsDir, 0755); err != nil {
+	if err := os.MkdirAll(config.DownloadsDir, 0755); err != nil {
 		log.Fatalf("Failed to create downloads directory: %v", err)
 	}
 
 	// Initialize Canvus client
 	client := canvusapi.NewClient(
-		cfg.CanvusServer,
-		cfg.CanvasID,
-		cfg.CanvusAPIKey,
+		config.CanvusServerURL,
+		config.CanvasID,
+		config.CanvusAPIKey,
+		config.AllowSelfSignedCerts,
 	)
 
-	// Create context for graceful shutdown
+	// Create context that can be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Handle interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\n🛑 Received interrupt signal. Shutting down...")
+		cancel()
+	}()
+
 	// Start monitoring with context
-	monitor := NewMonitor(client, cfg)
+	monitor := NewMonitor(client, config)
 	go monitor.Start(ctx)
 
-	// Setup signal handling
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	log.Println("AI Handler started successfully")
-	fmt.Println("Press Ctrl+C to exit")
-
-	// Wait for shutdown signal
-	sig := <-sigChan
-	log.Printf("Received shutdown signal: %v", sig)
-	fmt.Println("\nInitiating graceful shutdown...")
-
-	// Cancel context to notify all goroutines
-	cancel()
-
-	// Allow time for cleanup
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	// Wait for cleanup or timeout
-	select {
-	case <-shutdownCtx.Done():
-		log.Println("Shutdown timeout reached")
-	case <-monitor.Done():
-		log.Println("Clean shutdown completed")
-	}
-
-	// Call handlers.Cleanup() instead of directly dealing with downloads
-	Cleanup()
+	// Block until context is cancelled
+	<-ctx.Done()
+	fmt.Println("👋 Goodbye!")
 }

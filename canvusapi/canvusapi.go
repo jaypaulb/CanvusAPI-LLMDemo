@@ -430,23 +430,26 @@ func (c *Client) GetWidget(widgetID string, subscribe bool) (map[string]interfac
 
 // DownloadPDF downloads a PDF file
 func (c *Client) DownloadPDF(pdfID string, outputPath string) error {
-	return c.downloadFile(fmt.Sprintf("/pdfs/%s", pdfID), outputPath)
+	return c.downloadFile(fmt.Sprintf("pdfs/%s", pdfID), outputPath)
 }
 
 // DownloadImage downloads an image file
 func (c *Client) DownloadImage(imageID string, localPath string) error {
-	return c.downloadFile(fmt.Sprintf("/images/%s", imageID), localPath)
+	return c.downloadFile(fmt.Sprintf("images/%s", imageID), localPath)
 }
 
 // DownloadVideo downloads a video file
 func (c *Client) DownloadVideo(videoID string, outputPath string) error {
-	return c.downloadFile(fmt.Sprintf("/videos/%s", videoID), outputPath)
+	return c.downloadFile(fmt.Sprintf("videos/%s", videoID), outputPath)
 }
 
 // downloadFile is a helper function to download files
 func (c *Client) downloadFile(endpoint string, outputPath string) error {
-	url := fmt.Sprintf("%s/api/v1/canvases/%s%s/download",
-		c.Server,
+	// Remove the leading slash if present to avoid double slashes
+	endpoint = strings.TrimPrefix(endpoint, "/")
+
+	url := fmt.Sprintf("%s/api/v1/canvases/%s/%s/download",
+		strings.TrimRight(c.Server, "/"),
 		c.CanvasID,
 		endpoint)
 
@@ -457,7 +460,7 @@ func (c *Client) downloadFile(endpoint string, outputPath string) error {
 
 	req.Header.Set("Private-Token", c.ApiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download file: %v", err)
 	}
