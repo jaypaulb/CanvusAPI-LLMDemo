@@ -596,6 +596,12 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 	return nil
 }
 
+// isAzureOpenAIEndpoint checks if the endpoint is an Azure OpenAI endpoint
+func isAzureOpenAIEndpoint(endpoint string) bool {
+	return strings.Contains(strings.ToLower(endpoint), "openai.azure.com") ||
+		   strings.Contains(strings.ToLower(endpoint), "cognitiveservices.azure.com")
+}
+
 // processAIImage generates and uploads an image from the AI's response
 func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config) error {
 	downloadsMutex.Lock()
@@ -608,29 +614,50 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 		return fmt.Errorf("failed to create downloads directory: %w", err)
 	}
 
+	// Determine the endpoint to use
+	var endpoint string
+	var isAzure bool
+
+	if config.ImageLLMURL != "" {
+		endpoint = config.ImageLLMURL
+		logHandler("Using image-specific API URL: %s", endpoint)
+	} else if config.AzureOpenAIEndpoint != "" {
+		endpoint = config.AzureOpenAIEndpoint
+		isAzure = true
+		logHandler("Using Azure OpenAI endpoint: %s", endpoint)
+	} else if config.BaseLLMURL != "" {
+		endpoint = config.BaseLLMURL
+		logHandler("Using base LLM URL for image generation: %s", endpoint)
+	} else {
+		endpoint = "https://api.openai.com/v1"
+		logHandler("Using default OpenAI endpoint: %s", endpoint)
+	}
+
+	// Check if this is an Azure endpoint
+	if !isAzure {
+		isAzure = isAzureOpenAIEndpoint(endpoint)
+	}
+
+	// Generate the image using the appropriate API
+	if isAzure {
+		return processAIImageAzure(ctx, client, prompt, update, config, endpoint)
+	} else {
+		return processAIImageOpenAI(ctx, client, prompt, update, config, endpoint)
+	}
+}
+
+// processAIImageOpenAI generates images using standard OpenAI API
+func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, endpoint string) error {
 	// Generate the image using the configured API endpoint
 	imageConfig := openai.DefaultConfig(config.OpenAIAPIKey)
-
-	// Use ImageLLMURL if set, otherwise fall back to BaseLLMURL
-	if config.ImageLLMURL != "" {
-		logHandler("Using image-specific API URL: %s", config.ImageLLMURL)
-		imageConfig.BaseURL = config.ImageLLMURL
-	} else if config.BaseLLMURL != "" {
-		logHandler("Using base LLM URL for image generation: %s", config.BaseLLMURL)
-		imageConfig.BaseURL = config.BaseLLMURL
-	}
+	imageConfig.BaseURL = endpoint
 
 	// Check if the endpoint supports image generation
-	currentEndpoint := config.ImageLLMURL
-	if currentEndpoint == "" {
-		currentEndpoint = config.BaseLLMURL
-	}
-
-	if strings.Contains(strings.ToLower(currentEndpoint), "127.0.0.1") ||
-		strings.Contains(strings.ToLower(currentEndpoint), "localhost") {
+	if strings.Contains(strings.ToLower(endpoint), "127.0.0.1") ||
+		strings.Contains(strings.ToLower(endpoint), "localhost") {
 		return fmt.Errorf("image generation is not supported by the local API endpoint (%s). "+
 			"Please configure IMAGE_LLM_URL to use a service that supports image generation",
-			currentEndpoint)
+			endpoint)
 	}
 
 	aiClient := openai.NewClientWithConfig(imageConfig)
@@ -735,6 +762,125 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 	_, err = client.CreateImage(imagePath, payload)
 	if err != nil {
 		return fmt.Errorf("failed to create image: %w", err)
+	}
+
+	return nil
+}
+
+// processAIImageAzure generates images using Azure OpenAI API
+func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, endpoint string) error {
+	// Validate Azure configuration
+	if config.AzureOpenAIDeployment == "" {
+		return fmt.Errorf("Azure OpenAI deployment name is required but not configured. Please set AZURE_OPENAI_DEPLOYMENT")
+	}
+
+	logHandler("Using Azure OpenAI deployment: %s", config.AzureOpenAIDeployment)
+
+	// Create Azure-specific client configuration
+	imageConfig := openai.DefaultConfig(config.OpenAIAPIKey)
+	imageConfig.BaseURL = endpoint
+
+	// Azure OpenAI uses different authentication - we'll handle this in the request
+	aiClient := openai.NewClientWithConfig(imageConfig)
+
+	// Log the image request details
+	logHandler("Creating Azure OpenAI image with prompt: %s", prompt)
+
+	// For Azure, we need to use the deployment name as the model
+	// Map Azure deployment names to appropriate parameters
+	model := config.AzureOpenAIDeployment
+
+	// Create image request with Azure-specific parameters
+	imageReq := openai.ImageRequest{
+		Prompt:         prompt,
+		Model:          model,
+		ResponseFormat: openai.CreateImageResponseFormatURL,
+		N:              1,
+	}
+
+	// Azure OpenAI models may have different parameter support
+	// Only add style for dalle3 deployment (not gpt-image-1)
+	if strings.Contains(strings.ToLower(model), "dalle3") || strings.Contains(strings.ToLower(model), "dall-e") {
+		imageReq.Style = openai.CreateImageStyleVivid
+		logHandler("Added style parameter for DALL-E model")
+	}
+
+	image, err := aiClient.CreateImage(ctx, imageReq)
+	if err != nil {
+		return fmt.Errorf("failed to generate Azure AI image: %w", err)
+	}
+
+	// Validate image response (same as OpenAI)
+	if image.Data == nil {
+		logHandler("Azure API returned nil Data field")
+		return fmt.Errorf("no image data returned from Azure API")
+	}
+
+	if len(image.Data) == 0 {
+		logHandler("Azure API returned empty Data array")
+		return fmt.Errorf("no image data returned from Azure API")
+	}
+
+	if image.Data[0].URL == "" {
+		logHandler("Azure API returned empty URL")
+		return fmt.Errorf("no image URL returned from Azure API")
+	}
+
+	logHandler("Successfully received image URL from Azure API")
+
+	// Download the image (same as OpenAI)
+	req, err := http.NewRequestWithContext(ctx, "GET", image.Data[0].URL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create download request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download Azure AI image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download Azure image: status %d", resp.StatusCode)
+	}
+
+	// Save the image locally (same as OpenAI)
+	imagePath := filepath.Join(config.DownloadsDir, fmt.Sprintf("ai_image_%s.jpg", update["id"].(string)))
+	file, err := os.Create(imagePath)
+	if err != nil {
+		return fmt.Errorf("failed to create image file: %w", err)
+	}
+	defer func() {
+		file.Close()
+		os.Remove(imagePath) // Clean up after upload
+	}()
+
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		return fmt.Errorf("failed to write image data: %w", err)
+	}
+
+	// Calculate position for new image (same as OpenAI)
+	width := update["size"].(map[string]interface{})["width"].(float64)
+	height := update["size"].(map[string]interface{})["height"].(float64)
+	x := update["location"].(map[string]interface{})["x"].(float64) + (width * 0.8)
+	y := update["location"].(map[string]interface{})["y"].(float64) + (height * 0.8)
+
+	// Create the image widget (same as OpenAI)
+	payload := map[string]interface{}{
+		"title": fmt.Sprintf("AI Generated Image (Azure) for %s", update["id"].(string)),
+		"location": map[string]float64{
+			"x": x,
+			"y": y,
+		},
+		"size":  update["size"],
+		"depth": update["depth"].(float64) + 10,
+		"scale": update["scale"].(float64) / 3,
+	}
+
+	logHandler("Creating Azure image with payload: %+v", payload)
+	_, err = client.CreateImage(imagePath, payload)
+	if err != nil {
+		return fmt.Errorf("failed to create Azure image: %w", err)
 	}
 
 	return nil

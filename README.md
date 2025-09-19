@@ -102,6 +102,17 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
    OPENAI_NOTE_RESPONSE_TOKENS=600    # Increase for longer note responses
    ```
 
+   **Azure OpenAI Configuration**:
+   ```
+   # Using Azure OpenAI for image generation
+   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+   AZURE_OPENAI_DEPLOYMENT=gpt-image-1
+   AZURE_OPENAI_API_VERSION=2024-02-15-preview
+
+   # Or using Azure DALL-E 3
+   AZURE_OPENAI_DEPLOYMENT=dalle3
+   ```
+
    Note: Higher token limits will result in more detailed responses but may increase processing time and API costs.
 
 3. Install dependencies:
@@ -185,6 +196,7 @@ If you prefer not to build the program from source and just want to run it, you 
    - The system will create and place the generated image on your canvas
    - Configure the image model using `IMAGE_GEN_MODEL` (dall-e-3 or dall-e-2)
    - Set `IMAGE_LLM_URL` to specify the image generation endpoint (defaults to OpenAI API)
+   - **Azure OpenAI Support**: Configure `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_DEPLOYMENT` for Azure deployment
 
 5. **Custom Menu Integration**:
    The application provides two special icons for your Canvus custom menu:

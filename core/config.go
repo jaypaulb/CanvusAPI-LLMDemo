@@ -27,6 +27,11 @@ type Config struct {
 	TextLLMURL  string // Optional override for text generation
 	ImageLLMURL string // Optional override for image generation
 
+	// Azure OpenAI Configuration
+	AzureOpenAIEndpoint    string // Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
+	AzureOpenAIDeployment  string // Azure deployment name for image generation
+	AzureOpenAIApiVersion  string // Azure API version (default: 2024-02-15-preview)
+
 	// Model Selection
 	OpenAINoteModel   string
 	OpenAICanvasModel string
@@ -104,6 +109,11 @@ func LoadConfig() (*Config, error) {
 	textLLMURL := os.Getenv("TEXT_LLM_URL")   // Optional override
 	imageLLMURL := getEnvOrDefault("IMAGE_LLM_URL", "https://api.openai.com/v1") // Default to OpenAI for image generation
 
+	// Load Azure OpenAI configuration
+	azureOpenAIEndpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")
+	azureOpenAIDeployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
+	azureOpenAIApiVersion := getEnvOrDefault("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+
 	// Load model names
 	noteModel := getEnvOrDefault("OPENAI_NOTE_MODEL", "gpt-4")
 	canvasModel := getEnvOrDefault("OPENAI_CANVAS_MODEL", "gpt-4")
@@ -169,6 +179,11 @@ func LoadConfig() (*Config, error) {
 		BaseLLMURL:  baseLLMURL,
 		TextLLMURL:  textLLMURL,
 		ImageLLMURL: imageLLMURL,
+
+		// Azure OpenAI Configuration
+		AzureOpenAIEndpoint:   azureOpenAIEndpoint,
+		AzureOpenAIDeployment: azureOpenAIDeployment,
+		AzureOpenAIApiVersion: azureOpenAIApiVersion,
 
 		// Model Selection
 		OpenAINoteModel:   noteModel,
