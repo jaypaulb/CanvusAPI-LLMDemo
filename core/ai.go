@@ -47,5 +47,8 @@ func createOpenAIClient(cfg *Config) *openai.Client {
 		clientConfig.BaseURL = cfg.BaseLLMURL
 	}
 
+	// Configure HTTP client with TLS settings
+	clientConfig.HTTPClient = GetHTTPClient(cfg, cfg.AITimeout)
+
 	return openai.NewClientWithConfig(clientConfig)
 }

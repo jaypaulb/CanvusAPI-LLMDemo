@@ -1,7 +1,9 @@
 package core
 
 import (
+	"crypto/tls"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -210,4 +212,25 @@ func LoadConfig() (*Config, error) {
 		MaxFileSize:       maxFileSize,
 		DownloadsDir:      downloadsDir,
 	}, nil
+}
+
+// GetHTTPClient returns an HTTP client configured with TLS settings based on AllowSelfSignedCerts
+// This should be used for all HTTP requests to external APIs to ensure TLS configuration is respected
+func GetHTTPClient(cfg *Config, timeout time.Duration) *http.Client {
+	client := &http.Client{
+		Timeout: timeout,
+	}
+
+	if cfg.AllowSelfSignedCerts {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	return client
+}
+
+// GetDefaultHTTPClient returns an HTTP client with default timeout (30s) configured with TLS settings
+func GetDefaultHTTPClient(cfg *Config) *http.Client {
+	return GetHTTPClient(cfg, 30*time.Second)
 }

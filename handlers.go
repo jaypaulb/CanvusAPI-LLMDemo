@@ -290,6 +290,9 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 	} else if config.BaseLLMURL != "" {
 		clientConfig.BaseURL = config.BaseLLMURL
 	}
+
+	// Configure HTTP client with TLS settings
+	clientConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
 	client := openai.NewClientWithConfig(clientConfig)
 
 	ctx := context.Background()
@@ -660,6 +663,8 @@ func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt 
 			endpoint)
 	}
 
+	// Configure HTTP client with TLS settings
+	imageConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
 	aiClient := openai.NewClientWithConfig(imageConfig)
 
 	// Log the image request details
@@ -715,7 +720,8 @@ func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt 
 		return fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := core.GetDefaultHTTPClient(config)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download AI image: %w", err)
 	}
@@ -780,6 +786,9 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 	imageConfig := openai.DefaultConfig(config.OpenAIAPIKey)
 	imageConfig.BaseURL = endpoint
 
+	// Configure HTTP client with TLS settings
+	imageConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
+
 	// Azure OpenAI uses different authentication - we'll handle this in the request
 	aiClient := openai.NewClientWithConfig(imageConfig)
 
@@ -834,7 +843,8 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 		return fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := core.GetDefaultHTTPClient(config)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download Azure AI image: %w", err)
 	}
@@ -996,7 +1006,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	}, config)
 
 	// Perform OCR
-	ocrText, err := performGoogleVisionOCR(ctx, imageData)
+	ocrText, err := performGoogleVisionOCR(ctx, imageData, config)
 	if err != nil {
 		logHandler("Failed to perform OCR: %v", err)
 		errorMessage := "❌ Failed to process image.\n\n"
@@ -1205,6 +1215,8 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 	} else if pdfConfig.BaseLLMURL != "" {
 		clientConfig.BaseURL = pdfConfig.BaseLLMURL
 	}
+	// Configure HTTP client with TLS settings
+	clientConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
 	aiClient := openai.NewClientWithConfig(clientConfig)
 
 	resp, err := aiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -1768,16 +1780,16 @@ func cleanup(client *canvusapi.Client, processingNoteID, imageID, downloadPath s
 }
 
 // Add performGoogleVisionOCR function
-func performGoogleVisionOCR(ctx context.Context, imageData []byte) (string, error) {
+func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.Config) (string, error) {
 	logHandler("Starting Google Vision OCR process")
 
-	apiKey := os.Getenv("GOOGLE_VISION_API_KEY")
+	apiKey := config.GoogleVisionKey
 	if apiKey == "" {
-		return "", fmt.Errorf("Google Vision API key not found in environment variables")
+		return "", fmt.Errorf("Google Vision API key not found in configuration")
 	}
 
 	// Validate API key with minimal request
-	if err := validateGoogleAPIKey(ctx, apiKey); err != nil {
+	if err := validateGoogleAPIKey(ctx, apiKey, config); err != nil {
 		logHandler("❌ Google Vision API key validation failed: %v", err)
 		return "", fmt.Errorf("invalid API key: %w", err)
 	}
@@ -1838,8 +1850,8 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte) (string, erro
 
 	// Send request
 	logHandler("Sending request to Google Vision API...")
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	httpClient := core.GetDefaultHTTPClient(config)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to send request: %w", err)
 	}
@@ -1907,7 +1919,7 @@ func processImage(ctx context.Context, client *canvusapi.Client, imageID string,
 	}
 
 	// Perform OCR
-	ocrResult, err := performOCR(downloadPath, config.GoogleVisionKey)
+	ocrResult, err := performOCR(downloadPath, config.GoogleVisionKey, config)
 	if err != nil {
 		logHandler("❌ OCR failed: %v", err)
 		// Don't delete widgets on failure, just return the error
@@ -1951,7 +1963,7 @@ func processImage(ctx context.Context, client *canvusapi.Client, imageID string,
 }
 
 // Improve the OCR function with better error handling
-func performOCR(imagePath string, apiKey string) (string, error) {
+func performOCR(imagePath string, apiKey string, config *core.Config) (string, error) {
 	logHandler("Starting Google Vision OCR for image: %s", filepath.Base(imagePath))
 
 	// Read image file
@@ -1990,8 +2002,8 @@ func performOCR(imagePath string, apiKey string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// Make request with detailed error handling
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	httpClient := core.GetHTTPClient(config, 30*time.Second)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -2028,7 +2040,7 @@ func performOCR(imagePath string, apiKey string) (string, error) {
 }
 
 // validateGoogleAPIKey makes a minimal API call to verify the key works
-func validateGoogleAPIKey(ctx context.Context, apiKey string) error {
+func validateGoogleAPIKey(ctx context.Context, apiKey string, config *core.Config) error {
 	// Create minimal request with a 1x1 pixel transparent PNG
 	minimalImage := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
@@ -2073,8 +2085,8 @@ func validateGoogleAPIKey(ctx context.Context, apiKey string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	httpClient := core.GetHTTPClient(config, 10*time.Second)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("API key validation request failed: %w", err)
 	}

@@ -491,7 +491,7 @@ func (c *Client) SubscribeToWidgets(ctx context.Context) (io.ReadCloser, error) 
 
 	req.Header.Set("Private-Token", c.ApiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to stream: %w", err)
 	}
