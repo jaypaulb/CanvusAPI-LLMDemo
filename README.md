@@ -137,24 +137,40 @@ An intelligent integration between Canvus collaborative workspaces and AI servic
 
 ## Pre-built Releases
 
-If you prefer not to build the program from source and just want to run it, you can download the pre-built binaries and the example environment file:
+If you prefer not to build the program from source and just want to run it, you can download the pre-built binaries from the [GitHub Releases](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest) page.
 
-### Windows
-- **Binary**: [CanvusAPI-LLM.exe](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/CanvusAPI-LLM.exe)
+### Available Platforms
+
+#### Windows (amd64)
+- **Binary**: [canvusapi-windows-amd64.exe](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/canvusapi-windows-amd64.exe)
 - **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
 
-### Linux (amd64)
+#### Linux (amd64)
 - **Binary**: [canvusapi-linux-amd64](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/canvusapi-linux-amd64)
 - **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
 
+#### Linux (ARM64)
+- **Binary**: [canvusapi-linux-arm64](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/canvusapi-linux-arm64)
+- **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
+
+#### macOS (Intel - amd64)
+- **Binary**: [canvusapi-darwin-amd64](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/canvusapi-darwin-amd64)
+- **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
+
+#### macOS (Apple Silicon - ARM64)
+- **Binary**: [canvusapi-darwin-arm64](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest/download/canvusapi-darwin-arm64)
+- **example.env**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
+
+**Note**: All binaries are available on the [GitHub Releases](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases) page. The latest release is always available at `/releases/latest`.
+
 ### Deployment Steps
 
-1. Download the appropriate binary for your system (Windows or Linux)
-2. Download the `example.env` file
-3. Place both files in the same directory
-4. Rename `example.env` to `.env`
-5. Update the details in the `.env` file with your configuration
-6. If connecting to a server with a self-signed certificate:
+1. **Download the binary**: Visit the [GitHub Releases](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest) page and download the appropriate binary for your platform
+2. **Download the `example.env` file**: [Download example.env](https://github.com/jaypaulb/CanvusAPI-LLMDemo/raw/main/example.env)
+3. **Place both files in the same directory**
+4. **Rename `example.env` to `.env`**
+5. **Update the details in the `.env` file** with your configuration
+6. **If connecting to a server with a self-signed certificate**:
    - Set `ALLOW_SELF_SIGNED_CERTS=true` in your `.env` file
    - Note: This is not recommended for production environments
 
@@ -162,16 +178,34 @@ If you prefer not to build the program from source and just want to run it, you 
 1. Make the binary executable:
    ```bash
    chmod +x canvusapi-linux-amd64
+   # or for ARM64:
+   chmod +x canvusapi-linux-arm64
    ```
 2. Run the binary:
    ```bash
    ./canvusapi-linux-amd64
+   # or for ARM64:
+   ./canvusapi-linux-arm64
+   ```
+
+#### macOS-specific Steps
+1. Make the binary executable:
+   ```bash
+   chmod +x canvusapi-darwin-amd64
+   # or for Apple Silicon:
+   chmod +x canvusapi-darwin-arm64
+   ```
+2. Run the binary:
+   ```bash
+   ./canvusapi-darwin-amd64
+   # or for Apple Silicon:
+   ./canvusapi-darwin-arm64
    ```
 
 #### Windows-specific Steps
 1. Run the executable:
    ```bash
-   CanvusAPI-LLM.exe
+   canvusapi-windows-amd64.exe
    ```
 
 ## Usage
@@ -239,7 +273,7 @@ If you prefer not to build the program from source and just want to run it, you 
              scale: 0.33
    ```
 
-Once compiled, simply run the executable as described. If you prefer not to build from source, you can download the precompiled `CanvusAPI-LLM.exe` from the GitHub releases.
+Once compiled, simply run the executable as described. If you prefer not to build from source, you can download the precompiled binaries from the [GitHub Releases](https://github.com/jaypaulb/CanvusAPI-LLMDemo/releases/latest) page.
 
 ## Error Handling
 

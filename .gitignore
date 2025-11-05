@@ -40,6 +40,11 @@ tmp/
 *_string.go
 *_canvas.json
 
+# Built binaries (use GitHub releases instead)
+*.exe
+canvusapi-*
+!canvusapi/canvusapi.go
+
 # Backup files
 *.bak
 *~
