@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CanvusAPI-LLMDemo is a Go-based integration service that connects Canvus collaborative workspaces with AI services (OpenAI, Azure OpenAI, or local LLMs). It monitors canvas widgets in real-time, processes AI prompts enclosed in `{{ }}`, and handles PDF analysis, canvas analysis, and image generation.
+**CanvusLocalLLM** is a Go-based integration service that connects Canvus collaborative workspaces with local AI services via llama.cpp ecosystem. It monitors canvas widgets in real-time, processes AI prompts enclosed in `{{ }}`, and handles PDF analysis, canvas analysis, and image generation using embedded multimodal models with cloud fallback support.
 
 ## Build and Development Commands
 
@@ -200,6 +200,60 @@ bd prime                # Recover beads workflow context
 5. Use `/implement-tasks` or `/orchestrate-tasks` to execute
 6. Close issues as you complete them: `bd close <id1> <id2> ...`
 7. End session with full git sync checklist
+
+### Using bv as an AI Sidecar
+
+`bv` is a fast terminal UI for Beads projects (`.beads/beads.jsonl`). It renders lists/details and precomputes dependency metrics (PageRank, critical path, cycles, etc.) so you instantly see blockers and execution order. For agents, it's a **graph sidecar**: instead of parsing JSONL or risking hallucinated traversal, call the robot flags to get deterministic, dependency-aware outputs.
+
+**⚠️ IMPORTANT: As an agent, you must ONLY use bv with the `--robot-*` flags, otherwise you'll get stuck in the interactive TUI that's intended for human usage only!**
+
+**AI-Facing Commands:**
+
+```bash
+# Show all AI-facing commands
+bv --robot-help
+
+# JSON graph metrics (PageRank, betweenness, HITS, critical path, cycles)
+# Top-N summaries for quick triage
+bv --robot-insights
+
+# JSON execution plan: parallel tracks, items per track, unblocks lists
+# Shows what each item frees up
+bv --robot-plan
+
+# JSON priority recommendations with reasoning and confidence
+bv --robot-priority
+
+# List recipes (default, actionable, blocked, etc.)
+# Apply via: bv --recipe <name>
+bv --robot-recipes
+
+# JSON diff of issue changes since commit/date
+# Shows new/closed items and cycles introduced/resolved
+bv --robot-diff --diff-since <commit|date>
+```
+
+**Usage Pattern:**
+
+Use these commands instead of hand-rolling graph logic; `bv` already computes the hard parts so agents can act safely and quickly.
+
+**Examples:**
+
+```bash
+# Get dependency insights before planning work
+bv --robot-insights
+
+# Get recommended execution order
+bv --robot-plan
+
+# Check what's blocking critical path
+bv --recipe blocked --robot-insights
+
+# See what changed since last release
+bv --robot-diff --diff-since v1.0.0
+```
+
+**Never** run `bv` without `--robot-*` flags as an agent - you'll hang waiting for interactive input!
 
 ## Architecture and Code Organization
 
