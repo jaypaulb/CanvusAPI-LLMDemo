@@ -57,4 +57,4 @@ canvusapi-*
 .cursor/rules.jsonl
 .cursor/rules.jsonl
 .cursor/
-.cursorrulesgo_backend
+go_backend
