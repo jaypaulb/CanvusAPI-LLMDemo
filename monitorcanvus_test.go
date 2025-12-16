@@ -6,6 +6,7 @@ import (
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/db"
 	"go_backend/imagegen"
 	"go_backend/logging"
 )
@@ -370,7 +371,7 @@ func TestSetImagegenProcessor(t *testing.T) {
 	// Create a minimal client (won't actually connect)
 	client := &canvusapi.Client{}
 
-	m := NewMonitor(client, cfg, logger)
+	m := NewMonitor(client, cfg, logger, (*db.Repository)(nil))
 
 	t.Run("processor initially nil", func(t *testing.T) {
 		proc := m.getImagegenProcessor()
