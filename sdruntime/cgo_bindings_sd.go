@@ -1,23 +1,29 @@
 //go:build sd && cgo && !stub
+// +build sd,cgo,!stub
 
 // Real CGo implementation of stable-diffusion.cpp bindings.
 // Build with: CGO_ENABLED=1 go build -tags sd
 //
 // Prerequisites:
-//   1. stable-diffusion.cpp must be compiled as a shared library
-//   2. Set CGO_CFLAGS to include header path: -I/path/to/stable-diffusion.cpp
-//   3. Set CGO_LDFLAGS to link library: -L/path/to/build -lstable-diffusion
+//  1. stable-diffusion.cpp must be compiled as a shared library
+//  2. Library and headers in deps/stable-diffusion.cpp/
+//  3. Compiled library in lib/
 //
-// Example:
-//   CGO_CFLAGS="-I${SD_CPP_PATH}" \
-//   CGO_LDFLAGS="-L${SD_CPP_PATH}/build -lstable-diffusion -Wl,-rpath,${SD_CPP_PATH}/build" \
-//   go build -tags sd
-
+// Build stable-diffusion.cpp first:
+//
+//	cd deps/stable-diffusion.cpp
+//	./build-linux.sh  # or build-windows.ps1
+//
+// Then build Go application:
+//
+//	CGO_ENABLED=1 go build -tags sd
 package sdruntime
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../vendor/stable-diffusion.cpp
-#cgo LDFLAGS: -L${SRCDIR}/../vendor/stable-diffusion.cpp/build -lstable-diffusion
+#cgo CFLAGS: -I${SRCDIR}/../deps/stable-diffusion.cpp/include
+#cgo linux LDFLAGS: -L${SRCDIR}/../lib -lstable-diffusion -Wl,-rpath,${SRCDIR}/../lib
+#cgo windows LDFLAGS: -L${SRCDIR}/../lib -lstable-diffusion
+#cgo darwin LDFLAGS: -L${SRCDIR}/../lib -lstable-diffusion -Wl,-rpath,${SRCDIR}/../lib
 
 // NOTE: The actual header include is commented out until the library is available.
 // When stable-diffusion.cpp is integrated, uncomment these lines:
@@ -44,6 +50,7 @@ typedef void* sd_ctx_t;
 //                         int* out_width, int* out_height);
 // extern void sd_free_image(uint8_t* img);
 // extern const char* sd_get_backend_info();
+// extern int sd_cuda_available();
 */
 import "C"
 
@@ -192,6 +199,13 @@ func getBackendInfoImpl() string {
 	//     return C.GoString(cInfo)
 	// }
 	return "sd (CGo bindings - library integration pending)"
+}
+
+// IsCUDAAvailable checks if CUDA is available via the C library.
+func IsCUDAAvailable() bool {
+	// TODO: Uncomment when library is available:
+	// return C.sd_cuda_available() != 0
+	return false
 }
 
 // Ensure atomic is used to avoid unused import error

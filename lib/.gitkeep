@@ -1,0 +1,7 @@
+# This directory contains compiled shared libraries for CGo integration.
+#
+# Expected contents after building:
+#   - stable-diffusion.dll (Windows)
+#   - libstable-diffusion.so (Linux)
+#
+# Build instructions: See deps/stable-diffusion.cpp/README.md
