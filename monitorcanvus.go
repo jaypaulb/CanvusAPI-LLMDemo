@@ -12,6 +12,7 @@ import (
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/db"
 	"go_backend/imagegen"
 	"go_backend/logging"
 
@@ -23,6 +24,7 @@ type Monitor struct {
 	client           *canvusapi.Client
 	config           *core.Config
 	logger           *logging.Logger
+	repository       *db.Repository
 	done             chan struct{}
 	widgets          map[string]map[string]interface{}
 	widgetsMux       sync.RWMutex
@@ -51,11 +53,12 @@ type SharedCanvas struct {
 var sharedCanvas SharedCanvas
 
 // NewMonitor creates a new Monitor instance
-func NewMonitor(client *canvusapi.Client, cfg *core.Config, logger *logging.Logger) *Monitor {
+func NewMonitor(client *canvusapi.Client, cfg *core.Config, logger *logging.Logger, repo *db.Repository) *Monitor {
 	return &Monitor{
 		client:     client,
 		config:     cfg,
 		logger:     logger,
+		repository: repo,
 		done:       make(chan struct{}),
 		widgets:    make(map[string]map[string]interface{}),
 		widgetsMux: sync.RWMutex{},
@@ -298,11 +301,11 @@ func (m *Monitor) routeUpdate(update Update) error {
 			return nil
 		}
 		// Fall back to existing text/image classification flow
-		go handleNote(update, m.client, m.config, m.logger)
+		go handleNote(update, m.client, m.config, m.logger, m.repository)
 	case "Image":
 		if title, ok := update["title"].(string); ok {
 			if strings.HasPrefix(title, "Snapshot at") {
-				go handleSnapshot(update, m.client, m.config, m.logger)
+				go handleSnapshot(update, m.client, m.config, m.logger, m.repository)
 			} else if strings.HasPrefix(title, "AI_Icon_") {
 				return m.handleAIIcon(update)
 			}
@@ -372,7 +375,7 @@ func (m *Monitor) handleImagePrompt(update Update, prompt string) {
 	proc := m.getImagegenProcessor()
 	if proc == nil {
 		log.Debug("imagegen processor not available, falling back to handleNote")
-		handleNote(update, m.client, m.config, m.logger)
+		handleNote(update, m.client, m.config, m.logger, m.repository)
 		return
 	}
 
@@ -381,7 +384,7 @@ func (m *Monitor) handleImagePrompt(update Update, prompt string) {
 	if err != nil {
 		log.Error("failed to create parent widget for image generation", zap.Error(err))
 		// Fall back to handleNote which has error handling
-		handleNote(update, m.client, m.config, m.logger)
+		handleNote(update, m.client, m.config, m.logger, m.repository)
 		return
 	}
 
@@ -487,4 +490,24 @@ func truncatePrompt(text string, maxLen int) string {
 		return text[:maxLen]
 	}
 	return text[:maxLen-3] + "..."
+}
+
+// handleAIIcon processes AI_Icon_ image updates
+func (m *Monitor) handleAIIcon(update Update) error {
+	title, _ := update["title"].(string)
+
+	// Extract the action from the title
+	action := strings.TrimPrefix(title, "AI_Icon_")
+
+	// Route to appropriate precis handler based on action
+	switch action {
+	case "PDFPrecis":
+		go handlePDFPrecis(update, m.client, m.config, m.logger, m.repository)
+	case "CanvusPrecis":
+		go handleCanvusPrecis(update, m.client, m.config, m.logger, m.repository)
+	default:
+		m.logger.Debug("unknown AI_Icon action", zap.String("action", action))
+	}
+
+	return nil
 }

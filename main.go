@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/db"
 	"go_backend/imagegen"
 	"go_backend/logging"
 	"go_backend/sdruntime"
@@ -94,6 +96,31 @@ func main() {
 		logger.Fatal("Failed to create downloads directory", zap.Error(err))
 	}
 
+	// Initialize database
+	// Determine database path from environment or use default in user's home
+	dbPath := os.Getenv("DATABASE_PATH")
+	if dbPath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			logger.Fatal("Failed to determine home directory", zap.Error(err))
+		}
+		dbPath = filepath.Join(homeDir, ".canvuslocallm", "data.db")
+	}
+
+	logger.Info("Initializing database", zap.String("path", dbPath))
+	database, err := db.NewDatabase(dbPath)
+	if err != nil {
+		logger.Fatal("Failed to initialize database", zap.Error(err))
+	}
+
+	// Create async writer for database operations (buffer size 100, 2 workers)
+	asyncWriter := db.NewAsyncWriter(database.DB(), 100, 2, logger.Zap())
+	asyncWriter.Start()
+
+	// Create repository with async writer
+	repository := db.NewRepository(database, asyncWriter)
+	logger.Info("Database and repository initialized")
+
 	// Initialize Canvus client
 	client := canvusapi.NewClient(
 		config.CanvusServerURL,
@@ -113,6 +140,25 @@ func main() {
 			return syncErr
 		}
 		logger.Info("Logger synced")
+		return nil
+	})
+
+	// Register async writer shutdown (priority 10 - before database)
+	shutdownManager.Register("async-writer", 10, func(ctx context.Context) error {
+		logger.Info("Stopping async writer...")
+		asyncWriter.Stop()
+		logger.Info("Async writer stopped")
+		return nil
+	})
+
+	// Register database close (priority 15 - after async writer)
+	shutdownManager.Register("database", 15, func(ctx context.Context) error {
+		logger.Info("Closing database...")
+		if closeErr := database.Close(); closeErr != nil {
+			logger.Error("Failed to close database", zap.Error(closeErr))
+			return closeErr
+		}
+		logger.Info("Database closed")
 		return nil
 	})
 
@@ -139,7 +185,7 @@ func main() {
 	}
 
 	// Start monitoring with context from shutdown manager
-	monitor := NewMonitor(client, config, logger)
+	monitor := NewMonitor(client, config, logger, repository)
 
 	// Wire in the imagegen processor if available
 	if imageProcessor != nil {
