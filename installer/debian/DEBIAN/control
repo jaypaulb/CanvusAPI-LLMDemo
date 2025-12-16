@@ -4,7 +4,10 @@ Section: misc
 Priority: optional
 Architecture: amd64
 Maintainer: CanvusLocalLLM Team <support@canvuslocallm.local>
-Depends: systemd
+Depends: systemd, libc6 (>= 2.31)
+Recommends: nvidia-cuda-toolkit (>= 11.0), nvidia-driver-525 | nvidia-driver-535 | nvidia-driver-545 | nvidia-driver-550
+Suggests: nvidia-cuda-dev
+Installed-Size: 4200000
 Description: Local AI integration service for Canvus
  CanvusLocalLLM connects Canvus collaborative workspaces with local AI
  services via llama.cpp ecosystem. It monitors canvas widgets in real-time,
@@ -16,5 +19,10 @@ Description: Local AI integration service for Canvus
   - Real-time canvas monitoring
   - AI prompt processing
   - PDF analysis and summarization
-  - Image generation support
+  - Local image generation with Stable Diffusion (CUDA accelerated)
   - Handwriting recognition
+ .
+ Hardware Requirements for Image Generation:
+  - NVIDIA GPU with CUDA support (RTX 20xx/30xx/40xx recommended)
+  - Minimum 8GB GPU memory for optimal performance
+  - CUDA Toolkit 11.0 or later

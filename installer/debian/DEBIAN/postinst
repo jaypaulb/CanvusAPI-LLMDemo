@@ -6,6 +6,8 @@ INSTALL_DIR="/opt/canvuslocallm"
 SERVICE_USER="canvusllm"
 SERVICE_GROUP="canvusllm"
 SERVICE_NAME="canvuslocallm"
+LIB_DIR="$INSTALL_DIR/lib"
+MODELS_DIR="$INSTALL_DIR/models"
 
 case "$1" in
     configure)
@@ -13,6 +15,18 @@ case "$1" in
         if [ ! -d "$INSTALL_DIR" ]; then
             mkdir -p "$INSTALL_DIR"
             echo "Created installation directory: $INSTALL_DIR"
+        fi
+
+        # Create lib directory for shared libraries
+        if [ ! -d "$LIB_DIR" ]; then
+            mkdir -p "$LIB_DIR"
+            echo "Created lib directory: $LIB_DIR"
+        fi
+
+        # Create models directory for AI models
+        if [ ! -d "$MODELS_DIR" ]; then
+            mkdir -p "$MODELS_DIR"
+            echo "Created models directory: $MODELS_DIR"
         fi
 
         # Create service group if not exists
@@ -30,6 +44,12 @@ case "$1" in
                 --comment "CanvusLocalLLM Service Account" \
                 "$SERVICE_USER"
             echo "Created system user: $SERVICE_USER"
+        fi
+
+        # Add service user to video group for GPU access
+        if getent group video > /dev/null 2>&1; then
+            usermod -a -G video "$SERVICE_USER" 2>/dev/null || true
+            echo "Added $SERVICE_USER to video group for GPU access"
         fi
 
         # Copy .env.example to .env if .env doesn't exist
@@ -55,6 +75,30 @@ case "$1" in
             chmod 755 "$INSTALL_DIR/canvuslocallm"
         fi
 
+        # Set library permissions
+        if [ -d "$LIB_DIR" ]; then
+            chmod 755 "$LIB_DIR"
+            # Make shared libraries executable/readable
+            find "$LIB_DIR" -name "*.so*" -exec chmod 755 {} \; 2>/dev/null || true
+        fi
+
+        # Set model file permissions (read-only for service)
+        if [ -d "$MODELS_DIR" ]; then
+            chmod 755 "$MODELS_DIR"
+            find "$MODELS_DIR" -type f -exec chmod 644 {} \; 2>/dev/null || true
+        fi
+
+        # Configure LD_LIBRARY_PATH for the shared library
+        # Create ld.so.conf.d entry for canvuslocallm libs
+        LD_CONF_FILE="/etc/ld.so.conf.d/canvuslocallm.conf"
+        if [ ! -f "$LD_CONF_FILE" ]; then
+            echo "$LIB_DIR" > "$LD_CONF_FILE"
+            echo "Created library config: $LD_CONF_FILE"
+        fi
+
+        # Update dynamic linker cache
+        ldconfig
+
         # Install systemd service
         if [ -f "$INSTALL_DIR/canvuslocallm.service" ]; then
             cp "$INSTALL_DIR/canvuslocallm.service" /etc/systemd/system/
@@ -68,11 +112,39 @@ case "$1" in
         systemctl enable "$SERVICE_NAME.service"
         echo "Enabled $SERVICE_NAME service"
 
+        # Check for NVIDIA GPU
+        GPU_DETECTED=false
+        if command -v nvidia-smi > /dev/null 2>&1; then
+            if nvidia-smi > /dev/null 2>&1; then
+                GPU_DETECTED=true
+                GPU_INFO=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1)
+                echo "Detected NVIDIA GPU: $GPU_INFO"
+            fi
+        fi
+
         # Print post-installation instructions
         echo ""
         echo "========================================"
         echo "CanvusLocalLLM Installation Complete"
         echo "========================================"
+        echo ""
+        echo "Installed components:"
+        echo "  - Main application: $INSTALL_DIR/canvuslocallm"
+        if [ -f "$LIB_DIR/libstable-diffusion.so" ]; then
+            echo "  - SD Library: $LIB_DIR/libstable-diffusion.so"
+        fi
+        if [ -f "$MODELS_DIR/sd-v1-5.safetensors" ]; then
+            echo "  - SD Model: $MODELS_DIR/sd-v1-5.safetensors"
+        fi
+        echo ""
+        if [ "$GPU_DETECTED" = true ]; then
+            echo "GPU Status: NVIDIA GPU detected - image generation enabled"
+        else
+            echo "GPU Status: No NVIDIA GPU detected"
+            echo "  Image generation will use CPU (slower) or cloud fallback"
+            echo "  To enable GPU acceleration:"
+            echo "    sudo apt install nvidia-cuda-toolkit nvidia-driver-535"
+        fi
         echo ""
         echo "Next steps:"
         echo "1. Edit configuration: sudo nano $INSTALL_DIR/.env"

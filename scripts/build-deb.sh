@@ -7,17 +7,22 @@
 #   ./scripts/build-deb.sh [OPTIONS]
 #
 # Options:
-#   --version VER   Version string for the package (default: 1.0.0)
-#   --output DIR    Output directory for .deb file (default: dist/)
-#   --clean         Remove existing build artifacts before building
-#   --skip-build    Skip Go build, use existing binary
-#   --help          Show this help message
+#   --version VER     Version string for the package (default: 1.0.0)
+#   --output DIR      Output directory for .deb file (default: dist/)
+#   --clean           Remove existing build artifacts before building
+#   --skip-build      Skip Go build, use existing binary
+#   --with-sd         Include Stable Diffusion library and model (~4GB)
+#   --sd-lib PATH     Path to libstable-diffusion.so (default: lib/)
+#   --sd-model PATH   Path to SD model file (default: models/sd-v1-5.safetensors)
+#   --help            Show this help message
 #
 # Output:
 #   Creates canvuslocallm_VERSION_amd64.deb containing:
 #   - /opt/canvuslocallm/canvuslocallm (binary)
 #   - /opt/canvuslocallm/canvuslocallm.service (systemd unit)
 #   - /opt/canvuslocallm/.env.example (configuration template)
+#   - /opt/canvuslocallm/lib/libstable-diffusion.so (if --with-sd)
+#   - /opt/canvuslocallm/models/sd-v1-5.safetensors (if --with-sd)
 #   - DEBIAN scripts (postinst, prerm, postrm)
 
 set -euo pipefail
@@ -34,6 +39,9 @@ VERSION="1.0.0"
 OUTPUT_DIR="$PROJECT_ROOT/dist"
 CLEAN_BUILD=false
 SKIP_BUILD=false
+WITH_SD=false
+SD_LIB_PATH="$PROJECT_ROOT/lib/libstable-diffusion.so"
+SD_MODEL_PATH="$PROJECT_ROOT/models/sd-v1-5.safetensors"
 
 # Colors for output (disabled if not a terminal)
 if [[ -t 2 ]]; then
@@ -68,7 +76,7 @@ log_error() {
 }
 
 show_help() {
-    sed -n '2,21p' "$0" | sed 's/^# //' | sed 's/^#//'
+    sed -n '2,27p' "$0" | sed 's/^# //' | sed 's/^#//'
     exit 0
 }
 
@@ -140,6 +148,16 @@ validate_source_files() {
         missing+=("example.env")
     fi
 
+    # Validate SD files if --with-sd is specified
+    if [[ "$WITH_SD" == "true" ]]; then
+        if [[ ! -f "$SD_LIB_PATH" ]]; then
+            missing+=("$SD_LIB_PATH (use --sd-lib to specify path)")
+        fi
+        if [[ ! -f "$SD_MODEL_PATH" ]]; then
+            missing+=("$SD_MODEL_PATH (use --sd-model to specify path)")
+        fi
+    fi
+
     if [[ ${#missing[@]} -gt 0 ]]; then
         log_error "Missing required source files: ${missing[*]}"
         log_error "Please ensure you're running from the project root."
@@ -195,9 +213,20 @@ create_package_structure() {
     # Create directory structure
     mkdir -p "$pkg_dir/DEBIAN"
     mkdir -p "$pkg_dir/opt/canvuslocallm"
+    mkdir -p "$pkg_dir/opt/canvuslocallm/lib"
+    mkdir -p "$pkg_dir/opt/canvuslocallm/models"
 
     # Return the package directory path via stdout
     echo "$pkg_dir"
+}
+
+calculate_installed_size() {
+    local pkg_dir="$1"
+
+    # Calculate size in KB (dpkg convention)
+    local size_kb
+    size_kb=$(du -sk "$pkg_dir" | cut -f1)
+    echo "$size_kb"
 }
 
 generate_control_file() {
@@ -205,15 +234,24 @@ generate_control_file() {
 
     log_info "Generating control file with version $VERSION..."
 
-    # Read the template control file and update version
-    cat > "$pkg_dir/DEBIAN/control" << EOF
+    # Calculate installed size after all files are copied
+    local installed_size
+    installed_size=$(calculate_installed_size "$pkg_dir")
+
+    # Generate control file with appropriate dependencies
+    if [[ "$WITH_SD" == "true" ]]; then
+        # Include CUDA recommendations for SD-enabled package
+        cat > "$pkg_dir/DEBIAN/control" << EOF
 Package: ${PACKAGE_NAME}
 Version: ${VERSION}
 Section: misc
 Priority: optional
 Architecture: amd64
 Maintainer: CanvusLocalLLM Team <support@canvuslocallm.local>
-Depends: systemd
+Depends: systemd, libc6 (>= 2.31)
+Recommends: nvidia-cuda-toolkit (>= 11.0), nvidia-driver-525 | nvidia-driver-535 | nvidia-driver-545 | nvidia-driver-550
+Suggests: nvidia-cuda-dev
+Installed-Size: ${installed_size}
 Description: Local AI integration service for Canvus
  CanvusLocalLLM connects Canvus collaborative workspaces with local AI
  services via llama.cpp ecosystem. It monitors canvas widgets in real-time,
@@ -225,9 +263,40 @@ Description: Local AI integration service for Canvus
   - Real-time canvas monitoring
   - AI prompt processing
   - PDF analysis and summarization
-  - Image generation support
+  - Local image generation with Stable Diffusion (CUDA accelerated)
+  - Handwriting recognition
+ .
+ Hardware Requirements for Image Generation:
+  - NVIDIA GPU with CUDA support (RTX 20xx/30xx/40xx recommended)
+  - Minimum 8GB GPU memory for optimal performance
+  - CUDA Toolkit 11.0 or later
+EOF
+    else
+        # Basic package without SD dependencies
+        cat > "$pkg_dir/DEBIAN/control" << EOF
+Package: ${PACKAGE_NAME}
+Version: ${VERSION}
+Section: misc
+Priority: optional
+Architecture: amd64
+Maintainer: CanvusLocalLLM Team <support@canvuslocallm.local>
+Depends: systemd, libc6 (>= 2.31)
+Installed-Size: ${installed_size}
+Description: Local AI integration service for Canvus
+ CanvusLocalLLM connects Canvus collaborative workspaces with local AI
+ services via llama.cpp ecosystem. It monitors canvas widgets in real-time,
+ processes AI prompts enclosed in {{ }}, and handles PDF analysis, canvas
+ analysis, and image generation using embedded multimodal models with
+ cloud fallback support.
+ .
+ Features:
+  - Real-time canvas monitoring
+  - AI prompt processing
+  - PDF analysis and summarization
+  - Image generation support (cloud fallback)
   - Handwriting recognition
 EOF
+    fi
 
     log_success "Generated control file"
 }
@@ -279,6 +348,38 @@ copy_application_files() {
     cp "$PROJECT_ROOT/example.env" "$pkg_dir/opt/canvuslocallm/.env.example"
     chmod 644 "$pkg_dir/opt/canvuslocallm/.env.example"
     log_success "Copied .env.example"
+}
+
+copy_sd_files() {
+    local pkg_dir="$1"
+
+    if [[ "$WITH_SD" != "true" ]]; then
+        log_info "Skipping SD files (--with-sd not specified)"
+        return 0
+    fi
+
+    log_info "Copying Stable Diffusion files..."
+
+    # Copy shared library
+    if [[ -f "$SD_LIB_PATH" ]]; then
+        cp "$SD_LIB_PATH" "$pkg_dir/opt/canvuslocallm/lib/"
+        chmod 755 "$pkg_dir/opt/canvuslocallm/lib/libstable-diffusion.so"
+        local lib_size
+        lib_size=$(ls -lh "$SD_LIB_PATH" | awk '{print $5}')
+        log_success "Copied libstable-diffusion.so ($lib_size)"
+    fi
+
+    # Copy model file
+    if [[ -f "$SD_MODEL_PATH" ]]; then
+        local model_name
+        model_name=$(basename "$SD_MODEL_PATH")
+        cp "$SD_MODEL_PATH" "$pkg_dir/opt/canvuslocallm/models/"
+        chmod 644 "$pkg_dir/opt/canvuslocallm/models/$model_name"
+        local model_size
+        model_size=$(ls -lh "$SD_MODEL_PATH" | awk '{print $5}')
+        log_success "Copied $model_name ($model_size)"
+        log_warn "Note: Model file is large. Package build may take several minutes."
+    fi
 }
 
 build_deb_package() {
@@ -348,6 +449,15 @@ verify_package() {
         "./opt/canvuslocallm/.env.example"
     )
 
+    # Add SD files to required list if --with-sd
+    if [[ "$WITH_SD" == "true" ]]; then
+        required_files+=("./opt/canvuslocallm/lib/libstable-diffusion.so")
+        # Add model file with actual name
+        local model_name
+        model_name=$(basename "$SD_MODEL_PATH")
+        required_files+=("./opt/canvuslocallm/models/$model_name")
+    fi
+
     local missing=()
     local contents
     contents=$(dpkg-deb --contents "$deb_path")
@@ -395,6 +505,18 @@ main() {
                 SKIP_BUILD=true
                 shift
                 ;;
+            --with-sd)
+                WITH_SD=true
+                shift
+                ;;
+            --sd-lib)
+                SD_LIB_PATH="$2"
+                shift 2
+                ;;
+            --sd-model)
+                SD_MODEL_PATH="$2"
+                shift 2
+                ;;
             --help|-h)
                 show_help
                 ;;
@@ -409,6 +531,11 @@ main() {
     echo "========================================" >&2
     echo "  CanvusLocalLLM Debian Package Builder" >&2
     echo "  Version: $VERSION" >&2
+    if [[ "$WITH_SD" == "true" ]]; then
+        echo "  Mode: Full (with Stable Diffusion)" >&2
+    else
+        echo "  Mode: Basic (without Stable Diffusion)" >&2
+    fi
     echo "========================================" >&2
     echo "" >&2
 
@@ -419,9 +546,12 @@ main() {
     local pkg_dir
     pkg_dir=$(create_package_structure)
 
-    generate_control_file "$pkg_dir"
     copy_debian_scripts "$pkg_dir"
     copy_application_files "$pkg_dir"
+    copy_sd_files "$pkg_dir"
+
+    # Generate control file AFTER copying files so we can calculate size
+    generate_control_file "$pkg_dir"
 
     local deb_path
     deb_path=$(build_deb_package "$pkg_dir")
@@ -446,6 +576,12 @@ main() {
     echo "  sudo nano /opt/canvuslocallm/.env" >&2
     echo "  sudo systemctl start canvuslocallm" >&2
     echo "" >&2
+    if [[ "$WITH_SD" == "true" ]]; then
+        echo "Note: Package includes Stable Diffusion support." >&2
+        echo "      Requires NVIDIA GPU with CUDA for optimal performance." >&2
+        echo "      Install CUDA toolkit: sudo apt install nvidia-cuda-toolkit" >&2
+        echo "" >&2
+    fi
 }
 
 main "$@"

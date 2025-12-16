@@ -6,6 +6,7 @@ INSTALL_DIR="/opt/canvuslocallm"
 SERVICE_USER="canvusllm"
 SERVICE_GROUP="canvusllm"
 SERVICE_NAME="canvuslocallm"
+LD_CONF_FILE="/etc/ld.so.conf.d/canvuslocallm.conf"
 
 case "$1" in
     purge)
@@ -18,8 +19,20 @@ case "$1" in
         # Reload systemd daemon
         systemctl daemon-reload
 
-        # Remove installation directory
+        # Remove ld.so.conf.d entry
+        if [ -f "$LD_CONF_FILE" ]; then
+            rm -f "$LD_CONF_FILE"
+            ldconfig
+            echo "Removed library configuration"
+        fi
+
+        # Remove installation directory (including lib/ and models/)
         if [ -d "$INSTALL_DIR" ]; then
+            # Warn about large model files before removal
+            if [ -d "$INSTALL_DIR/models" ]; then
+                MODEL_SIZE=$(du -sh "$INSTALL_DIR/models" 2>/dev/null | cut -f1)
+                echo "Removing models directory ($MODEL_SIZE)..."
+            fi
             rm -rf "$INSTALL_DIR"
             echo "Removed installation directory: $INSTALL_DIR"
         fi
@@ -35,6 +48,8 @@ case "$1" in
             groupdel "$SERVICE_GROUP" 2>/dev/null || true
             echo "Removed system group: $SERVICE_GROUP"
         fi
+
+        echo "CanvusLocalLLM has been completely removed."
         ;;
 
     remove)
@@ -46,6 +61,21 @@ case "$1" in
 
         # Reload systemd daemon
         systemctl daemon-reload
+
+        # Remove ld.so.conf.d entry
+        if [ -f "$LD_CONF_FILE" ]; then
+            rm -f "$LD_CONF_FILE"
+            ldconfig
+            echo "Removed library configuration"
+        fi
+
+        # Note: On remove (not purge), we keep:
+        # - /opt/canvuslocallm/.env (user configuration)
+        # - /opt/canvuslocallm/models/ (large downloaded models)
+        # - Service user and group (for reinstall)
+        echo ""
+        echo "Note: Configuration and models preserved in $INSTALL_DIR"
+        echo "      Use 'apt purge canvuslocallm' to remove completely."
         ;;
 
     upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
