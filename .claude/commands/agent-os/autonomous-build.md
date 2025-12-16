@@ -2,600 +2,317 @@
 
 You are the autonomous build orchestrator running as a **dev team manager**. Your job is to coordinate up to 5 specialized agents working in parallel, dynamically dispatching work, validating outcomes, and learning from errors.
 
-## Prerequisites & Dependencies
+## How This Works
 
-**CRITICAL**: This orchestrator uses `bd` and `bv` EXCLUSIVELY for issue tracking and selection.
-- NO custom work-queue.json files
-- NO custom orchestration.yml files
-- ALL issue state comes from bd/bv commands
+This document is **instructions for you (Claude)**. You execute each step using your tools (Bash, Read, Write, Task, TaskOutput). There are no bash scripts to run - you implement the logic directly.
 
-```bash
-# Verify bd and bv are available
-command -v bd &>/dev/null || { echo "❌ bd not found"; exit 1; }
-command -v bv &>/dev/null || { echo "❌ bv not found"; exit 1; }
-```
+**Key principle**: Use `bd` and `bv` commands. Parse their text output directly. No jq.
 
-## Your Responsibilities
+---
 
-1. **Select work via bv** - Use `bv --robot-plan` for dependency-respecting work selection
-2. **Track status via bd** - Use `bd update` to change issue status
-3. **Manage agent pool** - Maintain up to 5 concurrent agents in slots
-4. **Dispatch dynamically** - Assign work immediately when slot opens
-5. **Validate continuously** - Validate and commit as agents complete
-6. **Learn from errors** - Extract patterns, improve future agents
-7. **Handle failures** - Use `bd label` to mark failed issues
+## Prerequisites
 
-**Mode**: Fully autonomous - continuous parallel execution until all work done or user interrupts.
+Verify bd and bv are available:
+
+1. Run: `command -v bd`
+2. Run: `command -v bv`
+
+If either fails, stop and inform user.
 
 ---
 
 ## Agent Type Inference
 
-Infer agent type from issue title at runtime (no pre-stored assignments):
+Determine agent type from issue title:
 
-```bash
-infer_agent_type() {
-  local TITLE="$1"
-
-  case "$TITLE" in
-    *[Dd]atabase*|*[Mm]odel*|*[Ss]chema*|*[Mm]igration*)
-      echo "database-layer-builder"
-      ;;
-    *[Aa][Pp][Ii]*|*[Ee]ndpoint*|*[Cc]ontroller*|*[Rr]oute*)
-      echo "api-layer-builder"
-      ;;
-    *[Uu][Ii]*|*[Cc]omponent*|*[Pp]age*|*[Vv]iew*|*[Ff]rontend*)
-      echo "ui-component-builder"
-      ;;
-    *[Ii]ntegration*|*[Ww]ire*|*[Ee]2[Ee]*)
-      echo "integration-assembler"
-      ;;
-    *[Tt]est*[Gg]ap*|*[Cc]overage*)
-      echo "test-gap-analyzer"
-      ;;
-    *)
-      echo "molecule-composer"
-      ;;
-  esac
-}
-```
+| Title contains | Agent type |
+|----------------|------------|
+| database, model, schema, migration | `database-layer-builder` |
+| api, endpoint, controller, route | `api-layer-builder` |
+| ui, component, page, view, frontend | `ui-component-builder` |
+| integration, wire, e2e | `integration-assembler` |
+| test gap, coverage | `test-gap-analyzer` |
+| (default) | `molecule-composer` |
 
 ---
 
 ## INITIALIZATION
 
-First, verify the project is ready and initialize minimal state.
+### Step 1: Verify project is ready
 
-```bash
-echo "=== Autonomous Build v2 Initialization ==="
-echo ""
+1. Check `.beads/` directory exists
+2. Run: `bd count`
+   - If 0: No issues. Tell user to run `/autonomous-plan` or `/create-tasks` first. Stop.
 
-# Verify we're at project root with Beads
-if [ ! -d ".beads" ]; then
-  echo "❌ No .beads/ directory found at project root"
-  exit 1
-fi
-echo "✓ .beads directory found"
+### Step 2: Check work availability
 
-# Check for issues using bd
-ISSUE_COUNT=$(bd list --json 2>/dev/null | jq '. | length' || echo "0")
-echo "Found $ISSUE_COUNT total issues in Beads"
+1. Run: `bd count --status open`
+   - Store as `OPEN_COUNT`
+2. Run: `bd count --status in_progress`
+   - Store as `IN_PROGRESS_COUNT`
+3. Run: `bd count --status closed`
+   - Store as `CLOSED_COUNT`
 
-if [ "$ISSUE_COUNT" -eq 0 ]; then
-  echo "❌ No Beads issues found"
-  echo "Run /autonomous-plan or /create-tasks first"
-  exit 1
-fi
+If `OPEN_COUNT` is 0 AND `IN_PROGRESS_COUNT` is 0:
+- If `CLOSED_COUNT` equals total: All done. Stop.
+- Else: Run `bd blocked` to see what's blocking. Stop.
 
-# Check ready work using bd
-READY_COUNT=$(bd ready --json 2>/dev/null | jq '. | length' || echo "0")
-echo "Ready to work: $READY_COUNT issues"
+### Step 3: Recovery - Handle orphaned in_progress issues
 
-if [ "$READY_COUNT" -eq 0 ]; then
-  # Check if everything is closed
-  CLOSED_COUNT=$(bd list --status closed --json 2>/dev/null | jq '. | length' || echo "0")
-  if [ "$CLOSED_COUNT" -eq "$ISSUE_COUNT" ]; then
-    echo "🎉 All issues are already closed!"
-    exit 0
-  fi
+If `IN_PROGRESS_COUNT` > 0:
+1. Run: `bd list --status in_progress`
+2. For each issue ID shown:
+   - Run: `bd comment <ID> "RECOVERY: Orchestrator restarted. Re-queuing."`
+   - Run: `bd update <ID> --status open`
+3. Tell user: "Recovered N orphaned issues"
 
-  # Check blocked
-  BLOCKED_INFO=$(bd blocked 2>/dev/null || echo "")
-  echo "⚠️  No ready work. Check blocked issues:"
-  echo "$BLOCKED_INFO"
-  exit 1
-fi
+### Step 4: Initialize state directory
 
-# Initialize minimal state directory (only for agent pool and learning)
-mkdir -p .beads/autonomous-state/locks
-mkdir -p .beads/autonomous-state/learning
+1. Run: `mkdir -p .beads/autonomous-state/locks`
+2. Run: `mkdir -p .beads/autonomous-state/learning`
+3. Run: `rm -f .beads/autonomous-state/locks/*.lock`
 
-# Initialize or reset agent pool (slot tracking only)
-MAX_AGENTS=5
-cat > .beads/autonomous-state/agent-pool.json <<EOF
-{
-  "max_agents": $MAX_AGENTS,
-  "slots": {},
-  "heartbeat_interval": 10
-}
-EOF
+### Step 5: Create/Reset agent pool file
 
-# Initialize learning system (if not exists)
-if [ ! -f ".beads/autonomous-state/learning/improvements.json" ]; then
-  cat > .beads/autonomous-state/learning/improvements.json <<'EOF'
-{
-  "common_errors": [],
-  "best_practices": [],
-  "conflict_patterns": []
-}
-EOF
-fi
-
-# Clean any stale locks
-rm -f .beads/autonomous-state/locks/*.lock 2>/dev/null
-
-echo "✓ State initialized"
-
-# Show current state from bd/bv
-echo ""
-echo "=== Current State (from bd/bv) ==="
-
-READY=$(bd ready --json 2>/dev/null | jq '. | length')
-IN_PROGRESS=$(bd list --status in_progress --json 2>/dev/null | jq '. | length')
-CLOSED=$(bd list --status closed --json 2>/dev/null | jq '. | length')
-FAILED=$(bd list --label failed --json 2>/dev/null | jq '. | length' || echo "0")
-
-echo "  Ready: $READY"
-echo "  In Progress: $IN_PROGRESS"
-echo "  Closed: $CLOSED"
-echo "  Failed: $FAILED"
-echo "  Agent slots: $MAX_AGENTS concurrent"
-echo ""
-
-# Get execution plan from bv
-echo "=== Execution Plan (from bv --robot-plan) ==="
-bv --robot-plan 2>/dev/null | jq -r '.plan.tracks[:3][] | "Track \(.track_id): \(.items | length) items - \(.reason)"'
-echo ""
-
-echo "Starting parallel agent pool (max $MAX_AGENTS concurrent)..."
-echo "Say 'stop' or 'pause' anytime to interrupt"
-echo ""
+Write this to `.beads/autonomous-state/agent-pool.txt`:
 ```
+max_agents=5
+heartbeat=10
+slot1=
+slot2=
+slot3=
+slot4=
+slot5=
+```
+
+### Step 6: Show initial state
+
+Tell user:
+- Total issues: (from `bd count`)
+- Open: (from step 2)
+- In progress: 0 (after recovery)
+- Closed: (from step 2)
+- "Starting parallel agent pool (max 5 concurrent)..."
 
 ---
 
 ## MAIN LOOP
 
-**Parallel Agent Pool Pattern**: Continuously monitor and dispatch work using bd/bv.
-
-Each loop iteration (heartbeat):
+Repeat these steps until all work is done:
 
 ### STEP 1: Dispatch New Work
 
-Check for free slots and ready organisms using bd/bv:
+**Goal**: Fill empty agent slots with ready work.
 
-```bash
-# Get current slot usage
-ACTIVE_SLOTS=$(jq '.slots | keys | length' .beads/autonomous-state/agent-pool.json)
-MAX_AGENTS=$(jq '.max_agents' .beads/autonomous-state/agent-pool.json)
+1. Read `.beads/autonomous-state/agent-pool.txt` to find empty slots (slot with no value)
+2. Count active slots (slots with values)
 
-# Get ready work from bv (dependency-respecting)
-READY_WORK=$(bv --robot-plan 2>/dev/null)
+If active slots < 5:
 
-# Spawn new agents while slots available
-while [[ "$ACTIVE_SLOTS" -lt "$MAX_AGENTS" ]]; do
-  # Find next available slot (1-5)
-  SLOT=""
-  for i in 1 2 3 4 5; do
-    if ! jq -e ".slots[\"$i\"]" .beads/autonomous-state/agent-pool.json &>/dev/null; then
-      SLOT=$i
-      break
-    fi
-  done
+3. Run: `bv --robot-plan`
+   - This returns JSON. Parse it to find tracks with items.
+   - Each track has a `track_id` and `items` array.
+   - Items have `id`, `title`, `status`.
 
-  if [ -z "$SLOT" ]; then
-    break  # No free slots
-  fi
+4. For each empty slot:
+   a. Find next available issue:
+      - Look through tracks for an item with status "open"
+      - Check it's not locked: no file at `.beads/autonomous-state/locks/<ID>.lock`
+      - Check bd confirms it's open: Run `bd show <ID>` and look for "Status: open"
 
-  # Select next organism from bv --robot-plan
-  # Iterate through tracks to find first available (not locked, not in_progress)
-  ORGANISM_ID=""
-  for TRACK in $(echo "$READY_WORK" | jq -r '.plan.tracks[].track_id'); do
-    CANDIDATE=$(echo "$READY_WORK" | jq -r ".plan.tracks[] | select(.track_id == \"$TRACK\") | .items[0].id // empty")
+   b. If found an issue to claim:
+      - Create lock: Write `<slot>|<timestamp>` to `.beads/autonomous-state/locks/<ID>.lock`
+      - Claim it: Run `bd update <ID> --status in_progress`
+      - Get title from the bv output or `bd show <ID>` (first line)
+      - Infer agent type from title (see table above)
 
-    if [ -z "$CANDIDATE" ]; then
-      continue
-    fi
+   c. Build the agent prompt (see Agent Prompt Template below)
 
-    # Check if already locked by another slot
-    if [ -f ".beads/autonomous-state/locks/${CANDIDATE}.lock" ]; then
-      continue
-    fi
+   d. Spawn the agent using Task tool:
+      - `subagent_type`: the inferred agent type
+      - `description`: "Implement <ID> (slot N)"
+      - `run_in_background`: true
+      - `prompt`: the built prompt
 
-    # Check current status via bd
-    STATUS=$(bd show "$CANDIDATE" --json 2>/dev/null | jq -r '.status')
-    if [ "$STATUS" = "open" ]; then
-      ORGANISM_ID="$CANDIDATE"
-      break
-    fi
-  done
+   e. Note the returned `task_id`
 
-  if [ -z "$ORGANISM_ID" ]; then
-    break  # No ready work
-  fi
+   f. Update agent-pool.txt: Set `slotN=<ID>|<task_id>`
 
-  # Get organism details from bd
-  ORGANISM_JSON=$(bd show "$ORGANISM_ID" --json 2>/dev/null)
-  ORGANISM_TITLE=$(echo "$ORGANISM_JSON" | jq -r '.title')
-
-  # Infer agent type from title
-  AGENT_TYPE=$(infer_agent_type "$ORGANISM_TITLE")
-
-  # Create lock
-  echo "$SLOT|$(date -Iseconds)" > ".beads/autonomous-state/locks/${ORGANISM_ID}.lock"
-
-  # Update bd status to in_progress
-  bd update "$ORGANISM_ID" --status in_progress 2>/dev/null
-
-  echo "🚀 Spawning agent in slot $SLOT: $ORGANISM_ID"
-  echo "   Title: $ORGANISM_TITLE"
-  echo "   Agent: $AGENT_TYPE"
-
-  # Load learning context
-  LEARNING_CONTEXT=""
-  IMPROVEMENTS=$(cat .beads/autonomous-state/learning/improvements.json 2>/dev/null || echo "{}")
-  if [ "$(echo "$IMPROVEMENTS" | jq '.common_errors | length')" -gt 0 ]; then
-    LEARNING_CONTEXT=$(echo "$IMPROVEMENTS" | jq -r '
-      "LEARN FROM PREVIOUS ERRORS:\n" +
-      (.common_errors[:3] | map("  ❌ \(.pattern)\n  ✅ \(.fix)") | join("\n"))
-    ')
-  fi
-
-  # Build agent prompt
-  TASK_PROMPT="You are implementing organism $ORGANISM_ID.
-
-$LEARNING_CONTEXT
-
-## Your Task
-
-Implement this organism, test it, and close it.
-
-## Checkpoint Protocol
-
-Log progress via bd comment after EACH step:
-\`\`\`bash
-bd comment $ORGANISM_ID \"CHECKPOINT: step N - description\"
-\`\`\`
-
-After each commit:
-\`\`\`bash
-bd comment $ORGANISM_ID \"COMMIT: \$(git rev-parse --short HEAD) - description\"
-\`\`\`
-
-## Process
-
-1. **Read organism details**:
-   \`\`\`bash
-   bd show $ORGANISM_ID
-   bd comment $ORGANISM_ID \"CHECKPOINT: step 1 - read details\"
-   \`\`\`
-
-2. **Implement**:
-   - Read any linked specs
-   - Implement the feature
-   - **COMMIT after implementation**
-   \`\`\`bash
-   git add -A && git commit -m \"impl($ORGANISM_ID): description\"
-   bd comment $ORGANISM_ID \"COMMIT: \$(git rev-parse --short HEAD) - implementation\"
-   \`\`\`
-
-3. **Write tests** (if applicable):
-   - Write tests for the implementation
-   - **COMMIT after writing tests**
-   \`\`\`bash
-   git add -A && git commit -m \"test($ORGANISM_ID): description\"
-   bd comment $ORGANISM_ID \"COMMIT: \$(git rev-parse --short HEAD) - tests\"
-   \`\`\`
-
-4. **Run tests**:
-   - Verify tests pass
-   \`\`\`bash
-   bd comment $ORGANISM_ID \"CHECKPOINT: step 4 - tests passing\"
-   \`\`\`
-
-5. **Close organism**:
-   \`\`\`bash
-   bd close $ORGANISM_ID
-   bd comment $ORGANISM_ID \"CHECKPOINT: COMPLETE\"
-   \`\`\`
-
-**IMPORTANT**: Commit early, commit often. Each commit is recoverable.
-
-Project root: $(pwd)
-Organism: $ORGANISM_ID"
-
-  echo ""
-  echo "**NOW SPAWN AGENT VIA TASK TOOL**:"
-  echo "  subagent_type: \"$AGENT_TYPE\""
-  echo "  description: \"Implement $ORGANISM_ID (slot $SLOT)\""
-  echo "  run_in_background: true"
-  echo "  prompt: [see TASK_PROMPT above]"
-  echo ""
-
-  # After spawning, update agent pool with task_id
-  # NOTE: You (Claude) will call Task tool and get task_id back
-  # Then update: jq ".slots[\"$SLOT\"] = {organism_id: \"$ORGANISM_ID\", task_id: \"TASK_ID\"}"
-
-  ACTIVE_SLOTS=$((ACTIVE_SLOTS + 1))
-done
-```
-
-**IMPORTANT**: You (Claude orchestrator) call the Task tool to spawn agents. After receiving task_id, update the agent pool:
-
-```bash
-jq ".slots[\"$SLOT\"] = {\"organism_id\": \"$ORGANISM_ID\", \"task_id\": \"$TASK_ID\", \"started_at\": \"$(date -Iseconds)\"}" \
-  .beads/autonomous-state/agent-pool.json > /tmp/ap.json && mv /tmp/ap.json .beads/autonomous-state/agent-pool.json
-```
+5. Tell user what you dispatched: "Spawned agent in slot N for <ID>: <title>"
 
 ### STEP 2: Monitor Active Agents
 
-Check status of all active agents (non-blocking poll):
+**Goal**: Check status of running agents WITHOUT reading their full output.
 
-```bash
-# For each active slot
-for SLOT in $(jq -r '.slots | keys[]' .beads/autonomous-state/agent-pool.json 2>/dev/null); do
-  TASK_ID=$(jq -r ".slots[\"$SLOT\"].task_id" .beads/autonomous-state/agent-pool.json)
-  ORGANISM_ID=$(jq -r ".slots[\"$SLOT\"].organism_id" .beads/autonomous-state/agent-pool.json)
+For each occupied slot in agent-pool.txt:
 
-  echo "Checking slot $SLOT: $ORGANISM_ID (task: $TASK_ID)"
+1. Extract the issue ID and task_id from the slot value
+2. Check if issue is closed: Run `bd show <ID>`
+   - Parse output for "Status: closed"
+   - If closed: Agent succeeded. Move to STEP 3.
+3. If not closed, check task status:
+   - Use `TaskOutput(task_id=..., block=False)`
+   - Just note if "running" or "completed"
+   - **DO NOT expand or read the output content** - it fills your context
 
-  echo "**NOW CHECK AGENT STATUS VIA TaskOutput TOOL**:"
-  echo "  task_id: \"$TASK_ID\""
-  echo "  block: false"
-  echo ""
+### STEP 3: Handle Completions
 
-  # NOTE: You (Claude) call TaskOutput(task_id, block=false)
-  # If status == "completed": proceed to STEP 3
-  # If status == "running": continue monitoring
-done
-```
+For each agent that completed (task finished or bd shows closed):
 
-### STEP 3: Handle Agent Completions
+1. Check bd status: Run `bd show <ID>` and parse for "Status:"
 
-For each completed agent, validate and update status via bd:
+**If Status is "closed"**:
+- Agent succeeded
+- Remove lock: `rm .beads/autonomous-state/locks/<ID>.lock`
+- Clear slot in agent-pool.txt: Set `slotN=`
+- Tell user: "Completed: <ID>"
 
-```bash
-# For completed agent with TASK_ID, ORGANISM_ID, SLOT:
-
-echo "✅ Agent in slot $SLOT completed: $ORGANISM_ID"
-
-# Check if organism was closed by agent (using bd)
-ORGANISM_STATUS=$(bd show "$ORGANISM_ID" --json 2>/dev/null | jq -r '.status')
-
-if [ "$ORGANISM_STATUS" = "closed" ]; then
-  # SUCCESS
-  echo "🎉 Organism $ORGANISM_ID completed successfully"
-
-  # Free slot
-  jq "del(.slots[\"$SLOT\"])" .beads/autonomous-state/agent-pool.json > /tmp/ap.json
-  mv /tmp/ap.json .beads/autonomous-state/agent-pool.json
-
-  # Remove lock
-  rm -f ".beads/autonomous-state/locks/${ORGANISM_ID}.lock"
-
-  echo "✓ Slot $SLOT freed"
-
-else
-  # FAILURE - agent didn't close the organism
-  echo "❌ Agent completed but organism status is: $ORGANISM_STATUS"
-
-  # Check comments for checkpoint info
-  LAST_CHECKPOINT=$(bd comments "$ORGANISM_ID" --json 2>/dev/null | jq -r '.[-1].body // "No checkpoints"')
-  echo "Last checkpoint: $LAST_CHECKPOINT"
-
-  # Check attempt count via bd label
-  ATTEMPT=$(bd show "$ORGANISM_ID" --json 2>/dev/null | jq -r '.labels | map(select(startswith("attempt-"))) | .[0] // "attempt-0"' | sed 's/attempt-//')
-  ATTEMPT=$((ATTEMPT + 1))
-  MAX_ATTEMPTS=3
-
-  if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
-    # Retry
-    echo "Retry $ATTEMPT/$MAX_ATTEMPTS"
-
-    # Update attempt label
-    bd label remove "$ORGANISM_ID" "attempt-$((ATTEMPT - 1))" 2>/dev/null || true
-    bd label add "$ORGANISM_ID" "attempt-$ATTEMPT"
-
-    # Reset status to open for retry
-    bd update "$ORGANISM_ID" --status open
-
-  else
-    # Max attempts - mark as failed
-    echo "❌ Max attempts reached - marking as failed"
-    bd label add "$ORGANISM_ID" "failed"
-    bd comment "$ORGANISM_ID" "FAILED: Max attempts ($MAX_ATTEMPTS) reached. Manual review required."
-  fi
-
-  # Free slot
-  jq "del(.slots[\"$SLOT\"])" .beads/autonomous-state/agent-pool.json > /tmp/ap.json
-  mv /tmp/ap.json .beads/autonomous-state/agent-pool.json
-
-  # Remove lock
-  rm -f ".beads/autonomous-state/locks/${ORGANISM_ID}.lock"
-
-  echo "✓ Slot $SLOT freed"
-fi
-```
+**If Status is NOT "closed"**:
+- Agent failed to close the issue
+- Check attempt count: Run `bd show <ID>` and look for labels like "attempt-N"
+- Increment attempt:
+  - If attempt < 3:
+    - Run: `bd label add <ID> attempt-N` (where N is current+1)
+    - Run: `bd update <ID> --status open`
+    - Tell user: "Retry queued for <ID> (attempt N/3)"
+  - If attempt >= 3:
+    - Run: `bd label add <ID> failed`
+    - Run: `bd comment <ID> "FAILED after 3 attempts"`
+    - Tell user: "Failed: <ID> (max attempts reached)"
+- Remove lock and clear slot
 
 ### STEP 4: Check Completion
 
-Check if all work is done using bd:
+1. Run: `bd count --status open` → store as OPEN
+2. Run: `bd count --status in_progress` → store as IN_PROGRESS
+3. Check agent-pool.txt for active slots → store as ACTIVE
 
-```bash
-# Query bd for current state
-READY=$(bd ready --json 2>/dev/null | jq '. | length')
-IN_PROGRESS=$(bd list --status in_progress --json 2>/dev/null | jq '. | length')
-ACTIVE_SLOTS=$(jq '.slots | keys | length' .beads/autonomous-state/agent-pool.json)
+If OPEN=0 AND IN_PROGRESS=0 AND ACTIVE=0:
+- All work complete!
+- Run: `bd count` → TOTAL
+- Run: `bd count --status closed` → CLOSED
+- Run: `bd count --label failed` → FAILED
+- Calculate success rate: (CLOSED - FAILED) / TOTAL * 100
+- Tell user final stats and stop loop.
 
-if [[ "$READY" -eq 0 ]] && [[ "$IN_PROGRESS" -eq 0 ]] && [[ "$ACTIVE_SLOTS" -eq 0 ]]; then
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  🎉 ALL WORK COMPLETE!"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
+### STEP 5: Display Progress
 
-  # Get final stats from bd
-  TOTAL=$(bd list --json 2>/dev/null | jq '. | length')
-  CLOSED=$(bd list --status closed --json 2>/dev/null | jq '. | length')
-  FAILED=$(bd list --label failed --json 2>/dev/null | jq '. | length' || echo "0")
-
-  SUCCESS_RATE=$(echo "scale=1; ($CLOSED - $FAILED) * 100 / $TOTAL" | bc 2>/dev/null || echo "N/A")
-
-  echo "Final Statistics (from bd):"
-  echo "  Total organisms: $TOTAL"
-  echo "  Closed: $CLOSED"
-  echo "  Failed: $FAILED"
-  echo "  Success rate: ${SUCCESS_RATE}%"
-  echo ""
-
-  if [ "$FAILED" -gt 0 ]; then
-    echo "Failed organisms requiring attention:"
-    bd list --label failed --json 2>/dev/null | jq -r '.[] | "  ❌ \(.id): \(.title)"'
-  fi
-
-  exit 0
-fi
-```
-
-### STEP 5: Display Progress Dashboard
-
-Show current state from bd/bv:
-
-```bash
-echo ""
-echo "=== Progress Dashboard ==="
-
-# All data from bd/bv
-READY=$(bd ready --json 2>/dev/null | jq '. | length')
-IN_PROGRESS=$(bd list --status in_progress --json 2>/dev/null | jq '. | length')
-CLOSED=$(bd list --status closed --json 2>/dev/null | jq '. | length')
-FAILED=$(bd list --label failed --json 2>/dev/null | jq '. | length' || echo "0")
-ACTIVE_SLOTS=$(jq '.slots | keys | length' .beads/autonomous-state/agent-pool.json)
-
-echo "Work Queue (from bd):"
-echo "  Ready: $READY | In Progress: $IN_PROGRESS | Closed: $CLOSED | Failed: $FAILED"
-
-echo ""
-echo "Agent Pool:"
-if [ "$ACTIVE_SLOTS" -gt 0 ]; then
-  jq -r '.slots | to_entries[] | "  Slot \(.key): \(.value.organism_id)"' .beads/autonomous-state/agent-pool.json
-else
-  echo "  (no active agents)"
-fi
-
-# BV insights
-echo ""
-echo "BV Insights:"
-bv --robot-priority 2>/dev/null | jq -r '.recommendations[:2][] | "  \(.issue_id): \(.reasoning | join(", "))"' || echo "  (none)"
-
-echo ""
-```
+Tell user current state:
+- "Ready: X | In Progress: Y | Closed: Z | Failed: W"
+- "Active agents: N/5"
+- List which slot has which issue
 
 ### STEP 6: Heartbeat Sleep
 
-Wait before next iteration:
+Wait 10 seconds before next iteration:
+- Run: `sleep 10`
 
-```bash
-HEARTBEAT=$(jq '.heartbeat_interval' .beads/autonomous-state/agent-pool.json)
-sleep $HEARTBEAT
-```
+### STEP 7: Context Management
 
-**Then loop back to STEP 1**.
+Before starting next iteration:
+- Summarize what happened this iteration
+- If you've been running many iterations, use `/compact` to clear context
+- Loop back to STEP 1
 
 ---
 
-## How to Run This
+## Agent Prompt Template
 
-You (Claude) are the orchestrator. When user runs `/autonomous-build`:
+When spawning an agent, use this prompt structure:
 
-### 1. INITIALIZATION
-- Verify .beads directory exists
-- Check issue count via `bd list --json | jq '. | length'`
-- Check ready work via `bd ready --json | jq '. | length'`
-- Initialize minimal agent-pool.json (slot tracking only)
+```
+You are implementing organism <ID>.
 
-### 2. ENTER MAIN LOOP
+## Task Details
 
-Loop continuously:
+Run: bd show <ID>
 
-**STEP 1: Dispatch**
-- Check free slots in agent-pool.json
-- Get work plan from `bv --robot-plan`
-- For each free slot:
-  - Select next organism from plan
-  - Get details via `bd show <id> --json`
-  - Infer agent type from title
-  - Create lock file
-  - Update status via `bd update <id> --status in_progress`
-  - **Spawn agent via Task tool** (run_in_background=true)
-  - Update agent-pool.json with task_id
+## Checkpoint Protocol
 
-**STEP 2: Monitor**
-- For each active slot:
-  - **Call TaskOutput(task_id, block=false)**
-  - Check if completed
+After EACH significant step, log progress:
+  bd comment <ID> "CHECKPOINT: step N - description"
 
-**STEP 3: Handle Completions**
-- Check organism status via `bd show <id> --json`
-- If closed: success, free slot
-- If not closed: retry or mark failed via `bd label add <id> failed`
+After each commit:
+  bd comment <ID> "COMMIT: <short-sha> - description"
 
-**STEP 4: Check Completion**
-- Query `bd ready`, `bd list --status in_progress`
-- If all done: exit
+## Implementation Process
 
-**STEP 5: Display Progress**
-- Show stats from bd queries
+1. Read the organism details: bd show <ID>
+2. Implement the feature
+3. Commit: git add -A && git commit -m "impl(<ID>): description"
+4. Write tests (if applicable)
+5. Commit tests: git add -A && git commit -m "test(<ID>): description"
+6. Verify tests pass
+7. Close: bd close <ID>
+8. Final checkpoint: bd comment <ID> "CHECKPOINT: COMPLETE"
 
-**STEP 6: Sleep**
-- Wait heartbeat_interval
+## Important
 
-### 3. Key Principles
-
-| Principle | Implementation |
-|-----------|----------------|
-| **Issue tracking** | bd exclusively |
-| **Work selection** | bv --robot-plan |
-| **Status updates** | bd update, bd close |
-| **Failure tracking** | bd label add failed |
-| **Progress tracking** | bd comment |
-| **Slot management** | Minimal agent-pool.json |
-
-### 4. Tool Calls
-
-```python
-# STEP 1: Spawn agents
-Task(
-    subagent_type=AGENT_TYPE,  # Inferred from title
-    description="Implement bd-123 (slot 1)",
-    prompt="[implementation prompt]",
-    run_in_background=True
-)
-
-# STEP 2: Monitor (non-blocking)
-TaskOutput(task_id="abc123", block=False)
-
-# STEP 3: Get output (blocking)
-TaskOutput(task_id="abc123", block=True)
+- Commit early, commit often
+- Each commit is recoverable
+- Close the issue when done: bd close <ID>
 ```
 
-### 5. State Recovery
+---
 
-If interrupted:
-1. User runs `/autonomous-build` again
-2. Locks are cleaned
-3. Agent pool is reset
-4. bd status reflects true state (in_progress organisms are already marked)
-5. Loop resumes with bd/bv queries
+## Agent Pool File Format
 
-**No custom state files to recover** - bd/bv ARE the source of truth.
+`.beads/autonomous-state/agent-pool.txt`:
+
+```
+max_agents=5
+heartbeat=10
+slot1=<issue-id>|<task-id>
+slot2=
+slot3=<issue-id>|<task-id>
+slot4=
+slot5=
+```
+
+Empty slot = no value after `=`
+Occupied slot = `<issue-id>|<task-id>`
+
+Read with: `Read` tool
+Update with: `Edit` tool or `Write` tool
+
+---
+
+## Key Commands Reference
+
+| Need | Command |
+|------|---------|
+| Total issue count | `bd count` |
+| Open count | `bd count --status open` |
+| In-progress count | `bd count --status in_progress` |
+| Closed count | `bd count --status closed` |
+| Failed count | `bd count --label failed` |
+| Ready work list | `bd ready` |
+| Work plan | `bv --robot-plan` |
+| Issue details | `bd show <ID>` |
+| Claim issue | `bd update <ID> --status in_progress` |
+| Close issue | `bd close <ID>` |
+| Add label | `bd label add <ID> <label>` |
+| Add comment | `bd comment <ID> "message"` |
+| Blocked issues | `bd blocked` |
+
+---
+
+## State Recovery
+
+If interrupted and restarted:
+1. Locks are cleaned (INITIALIZATION Step 4)
+2. Agent pool is reset (INITIALIZATION Step 5)
+3. Orphaned in_progress issues are recovered (INITIALIZATION Step 3)
+4. bd/bv remain the source of truth
+
+No complex state recovery needed - bd tracks all issue state.
+
+---
+
+## Principles
+
+1. **bd/bv are source of truth** - all issue state lives there
+2. **No jq** - parse text output directly
+3. **Minimal local state** - only agent-pool.txt and locks
+4. **Context awareness** - don't read agent output, check bd instead
+5. **Fail gracefully** - mark failed issues, continue with others
