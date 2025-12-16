@@ -1,0 +1,61 @@
+#!/bin/bash
+# Post-removal script for canvuslocallm
+set -e
+
+INSTALL_DIR="/opt/canvuslocallm"
+SERVICE_USER="canvusllm"
+SERVICE_GROUP="canvusllm"
+SERVICE_NAME="canvuslocallm"
+
+case "$1" in
+    purge)
+        # Remove systemd service file
+        if [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
+            rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+            echo "Removed systemd service file"
+        fi
+
+        # Reload systemd daemon
+        systemctl daemon-reload
+
+        # Remove installation directory
+        if [ -d "$INSTALL_DIR" ]; then
+            rm -rf "$INSTALL_DIR"
+            echo "Removed installation directory: $INSTALL_DIR"
+        fi
+
+        # Remove service user
+        if getent passwd "$SERVICE_USER" > /dev/null 2>&1; then
+            userdel "$SERVICE_USER" 2>/dev/null || true
+            echo "Removed system user: $SERVICE_USER"
+        fi
+
+        # Remove service group
+        if getent group "$SERVICE_GROUP" > /dev/null 2>&1; then
+            groupdel "$SERVICE_GROUP" 2>/dev/null || true
+            echo "Removed system group: $SERVICE_GROUP"
+        fi
+        ;;
+
+    remove)
+        # Remove systemd service file
+        if [ -f "/etc/systemd/system/$SERVICE_NAME.service" ]; then
+            rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+            echo "Removed systemd service file"
+        fi
+
+        # Reload systemd daemon
+        systemctl daemon-reload
+        ;;
+
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # Nothing to do
+        ;;
+
+    *)
+        echo "postrm called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

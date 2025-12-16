@@ -1,0 +1,97 @@
+#!/bin/bash
+# Post-installation script for canvuslocallm
+set -e
+
+INSTALL_DIR="/opt/canvuslocallm"
+SERVICE_USER="canvusllm"
+SERVICE_GROUP="canvusllm"
+SERVICE_NAME="canvuslocallm"
+
+case "$1" in
+    configure)
+        # Create installation directory if not exists
+        if [ ! -d "$INSTALL_DIR" ]; then
+            mkdir -p "$INSTALL_DIR"
+            echo "Created installation directory: $INSTALL_DIR"
+        fi
+
+        # Create service group if not exists
+        if ! getent group "$SERVICE_GROUP" > /dev/null 2>&1; then
+            groupadd --system "$SERVICE_GROUP"
+            echo "Created system group: $SERVICE_GROUP"
+        fi
+
+        # Create service user if not exists
+        if ! getent passwd "$SERVICE_USER" > /dev/null 2>&1; then
+            useradd --system \
+                --gid "$SERVICE_GROUP" \
+                --home-dir "$INSTALL_DIR" \
+                --shell /usr/sbin/nologin \
+                --comment "CanvusLocalLLM Service Account" \
+                "$SERVICE_USER"
+            echo "Created system user: $SERVICE_USER"
+        fi
+
+        # Copy .env.example to .env if .env doesn't exist
+        if [ ! -f "$INSTALL_DIR/.env" ]; then
+            if [ -f "$INSTALL_DIR/.env.example" ]; then
+                cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+                echo "Created configuration file: $INSTALL_DIR/.env"
+                echo "Please edit $INSTALL_DIR/.env with your settings"
+            fi
+        fi
+
+        # Set ownership and permissions
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
+        chmod 750 "$INSTALL_DIR"
+
+        # Protect configuration file if it exists
+        if [ -f "$INSTALL_DIR/.env" ]; then
+            chmod 640 "$INSTALL_DIR/.env"
+        fi
+
+        # Make binary executable if it exists
+        if [ -f "$INSTALL_DIR/canvuslocallm" ]; then
+            chmod 755 "$INSTALL_DIR/canvuslocallm"
+        fi
+
+        # Install systemd service
+        if [ -f "$INSTALL_DIR/canvuslocallm.service" ]; then
+            cp "$INSTALL_DIR/canvuslocallm.service" /etc/systemd/system/
+            echo "Installed systemd service"
+        fi
+
+        # Reload systemd daemon
+        systemctl daemon-reload
+
+        # Enable the service
+        systemctl enable "$SERVICE_NAME.service"
+        echo "Enabled $SERVICE_NAME service"
+
+        # Print post-installation instructions
+        echo ""
+        echo "========================================"
+        echo "CanvusLocalLLM Installation Complete"
+        echo "========================================"
+        echo ""
+        echo "Next steps:"
+        echo "1. Edit configuration: sudo nano $INSTALL_DIR/.env"
+        echo "2. Start the service:  sudo systemctl start $SERVICE_NAME"
+        echo "3. Check status:       sudo systemctl status $SERVICE_NAME"
+        echo "4. View logs:          sudo journalctl -u $SERVICE_NAME -f"
+        echo ""
+        echo "For more information, see: $INSTALL_DIR/README.txt"
+        echo ""
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        # Nothing to do
+        ;;
+
+    *)
+        echo "postinst called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

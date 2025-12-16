@@ -1,0 +1,20 @@
+Package: canvuslocallm
+Version: 1.0.0
+Section: misc
+Priority: optional
+Architecture: amd64
+Maintainer: CanvusLocalLLM Team <support@canvuslocallm.local>
+Depends: systemd
+Description: Local AI integration service for Canvus
+ CanvusLocalLLM connects Canvus collaborative workspaces with local AI
+ services via llama.cpp ecosystem. It monitors canvas widgets in real-time,
+ processes AI prompts enclosed in {{ }}, and handles PDF analysis, canvas
+ analysis, and image generation using embedded multimodal models with
+ cloud fallback support.
+ .
+ Features:
+  - Real-time canvas monitoring
+  - AI prompt processing
+  - PDF analysis and summarization
+  - Image generation support
+  - Handwriting recognition

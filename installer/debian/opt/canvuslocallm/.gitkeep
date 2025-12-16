@@ -1,0 +1,8 @@
+# Placeholder for installation directory
+# This directory will contain:
+# - canvuslocallm (binary)
+# - .env (configuration file)
+# - .env.example (configuration template)
+# - canvuslocallm.service (systemd unit file)
+# - LICENSE.txt (MIT license)
+# - README.txt (user documentation)

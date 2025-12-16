@@ -1,0 +1,32 @@
+#!/bin/bash
+# Pre-removal script for canvuslocallm
+set -e
+
+SERVICE_NAME="canvuslocallm"
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Stop the service if running
+        if systemctl is-active --quiet "$SERVICE_NAME.service" 2>/dev/null; then
+            echo "Stopping $SERVICE_NAME service..."
+            systemctl stop "$SERVICE_NAME.service"
+        fi
+
+        # Disable the service
+        if systemctl is-enabled --quiet "$SERVICE_NAME.service" 2>/dev/null; then
+            echo "Disabling $SERVICE_NAME service..."
+            systemctl disable "$SERVICE_NAME.service"
+        fi
+        ;;
+
+    failed-upgrade)
+        # Nothing to do
+        ;;
+
+    *)
+        echo "prerm called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+exit 0
