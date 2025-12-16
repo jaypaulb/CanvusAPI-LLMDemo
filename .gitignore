@@ -11,6 +11,7 @@
 # Log files
 *.log
 app.log
+logs/
 
 # Downloads directory (used for temporary file processing)
 downloads/
@@ -43,7 +44,12 @@ tmp/
 # Built binaries (use GitHub releases instead)
 *.exe
 canvusapi-*
+canvuslocallm
 !canvusapi/canvusapi.go
+
+# Build output directories
+dist/
+generations/
 
 # Backup files
 *.bak
@@ -66,3 +72,6 @@ models/*.gguf
 models/*.bin
 models/*.ckpt
 !models/.gitkeep
+
+# Build dependencies (large repos - cloned via build scripts)
+deps/
