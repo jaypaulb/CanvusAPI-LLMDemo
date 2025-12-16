@@ -6,6 +6,7 @@ package sdruntime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -28,6 +29,11 @@ type PooledContext struct {
 //   - LoadModel (atom from cgo_bindings) for context creation
 //   - FreeContext (atom from cgo_bindings) for context cleanup
 //   - ErrContextPoolClosed, ErrAcquireTimeout (atoms from errors.go)
+//
+// Public API:
+//   - NewContextPool(): Create a new pool
+//   - Generate(): Generate an image (acquires context, generates, releases)
+//   - Close(): Shut down the pool and free all contexts
 type ContextPool struct {
 	mu        sync.Mutex
 	contexts  chan *PooledContext
@@ -59,6 +65,56 @@ func NewContextPool(maxSize int, modelPath string) (*ContextPool, error) {
 		created:   0,
 		nextID:    1,
 	}, nil
+}
+
+// Generate creates an image from the given parameters.
+// It acquires a context from the pool, generates the image, and releases the context.
+//
+// The ctx parameter controls cancellation and timeout. If ctx is cancelled or
+// times out while waiting for a pool context, ErrAcquireTimeout is returned.
+//
+// Parameters:
+//   - ctx: context for cancellation/timeout
+//   - params: generation parameters (prompt, dimensions, etc.)
+//
+// Returns PNG image data as []byte, or an error.
+//
+// Error cases:
+//   - ErrInvalidParams: parameters fail validation
+//   - ErrAcquireTimeout: context.Done() before acquiring pool context
+//   - ErrContextPoolClosed: pool has been closed
+//   - ErrGenerationFailed: SD generation failed
+//   - ErrOutOfVRAM: GPU memory exhausted
+func (p *ContextPool) Generate(ctx context.Context, params GenerateParams) ([]byte, error) {
+	// Step 1: Validate parameters (atom)
+	if err := ValidateParams(params); err != nil {
+		return nil, err
+	}
+
+	// Step 2: Handle seed (-1 means random)
+	if params.Seed < 0 {
+		params.Seed = RandomSeed()
+	}
+
+	// Step 3: Acquire context from pool
+	pooledCtx, err := p.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire context: %w", err)
+	}
+	defer p.Release(pooledCtx)
+
+	// Step 4: Generate image using CGo binding
+	result, err := GenerateImage(pooledCtx.SDContext, params)
+	if err != nil {
+		return nil, fmt.Errorf("generate image: %w", err)
+	}
+
+	// Step 5: Validate output image (atom)
+	if err := ValidateImageData(result.ImageData); err != nil {
+		return nil, fmt.Errorf("generated image validation failed: %w", err)
+	}
+
+	return result.ImageData, nil
 }
 
 // Acquire retrieves a context from the pool, respecting the provided context's deadline.
@@ -166,7 +222,7 @@ func (p *ContextPool) Release(pc *PooledContext) {
 }
 
 // Close shuts down the pool and frees all contexts.
-// After Close is called, Acquire will return ErrContextPoolClosed.
+// After Close is called, Acquire and Generate will return ErrContextPoolClosed.
 // Close is safe to call multiple times.
 func (p *ContextPool) Close() error {
 	p.mu.Lock()

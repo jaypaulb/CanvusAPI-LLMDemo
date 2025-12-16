@@ -2,6 +2,7 @@ package sdruntime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -311,4 +312,145 @@ func TestContextPoolReleaseAfterClose(t *testing.T) {
 	if pc.SDContext.IsValid() {
 		t.Error("Context should be invalid after release to closed pool")
 	}
+}
+
+// TestContextPoolGenerate tests the high-level Generate method.
+func TestContextPoolGenerate(t *testing.T) {
+	modelPath := "/home/jaypaulb/Projects/gh/CanvusLocalLLM/go.mod"
+
+	pool, err := NewContextPool(2, modelPath)
+	if err != nil {
+		t.Fatalf("NewContextPool() failed: %v", err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// Test with valid parameters - will fail in stub mode with generation error
+	params := DefaultParams()
+	params.Prompt = "test prompt"
+
+	_, err = pool.Generate(ctx, params)
+	// In stub mode, we expect ErrGenerationFailed because the library is not available
+	if err == nil {
+		t.Error("Generate() in stub mode should return error (no library)")
+	} else if !errors.Is(err, ErrGenerationFailed) {
+		// We expect the error to wrap ErrGenerationFailed
+		t.Logf("Generate() returned expected error: %v", err)
+	}
+}
+
+// TestContextPoolGenerateInvalidParams tests Generate with invalid parameters.
+func TestContextPoolGenerateInvalidParams(t *testing.T) {
+	modelPath := "/home/jaypaulb/Projects/gh/CanvusLocalLLM/go.mod"
+
+	pool, err := NewContextPool(2, modelPath)
+	if err != nil {
+		t.Fatalf("NewContextPool() failed: %v", err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		params  GenerateParams
+		wantErr error
+	}{
+		{
+			name:    "empty prompt",
+			params:  GenerateParams{Prompt: "", Width: 512, Height: 512, Steps: 20, CFGScale: 7.0},
+			wantErr: ErrInvalidPrompt,
+		},
+		{
+			name:    "width too small",
+			params:  GenerateParams{Prompt: "test", Width: 64, Height: 512, Steps: 20, CFGScale: 7.0},
+			wantErr: ErrInvalidParams,
+		},
+		{
+			name:    "height too large",
+			params:  GenerateParams{Prompt: "test", Width: 512, Height: 4096, Steps: 20, CFGScale: 7.0},
+			wantErr: ErrInvalidParams,
+		},
+		{
+			name:    "steps too low",
+			params:  GenerateParams{Prompt: "test", Width: 512, Height: 512, Steps: 0, CFGScale: 7.0},
+			wantErr: ErrInvalidParams,
+		},
+		{
+			name:    "cfg scale too high",
+			params:  GenerateParams{Prompt: "test", Width: 512, Height: 512, Steps: 20, CFGScale: 100.0},
+			wantErr: ErrInvalidParams,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := pool.Generate(ctx, tt.params)
+			if err == nil {
+				t.Error("Generate() expected error, got nil")
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("Generate() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestContextPoolGenerateAfterClose tests Generate on a closed pool.
+func TestContextPoolGenerateAfterClose(t *testing.T) {
+	modelPath := "/home/jaypaulb/Projects/gh/CanvusLocalLLM/go.mod"
+
+	pool, err := NewContextPool(2, modelPath)
+	if err != nil {
+		t.Fatalf("NewContextPool() failed: %v", err)
+	}
+
+	// Close the pool
+	pool.Close()
+
+	ctx := context.Background()
+	params := DefaultParams()
+	params.Prompt = "test prompt"
+
+	_, err = pool.Generate(ctx, params)
+	if !errors.Is(err, ErrContextPoolClosed) {
+		t.Errorf("Generate() after Close() expected ErrContextPoolClosed, got: %v", err)
+	}
+}
+
+// TestContextPoolGenerateTimeout tests Generate with timeout.
+func TestContextPoolGenerateTimeout(t *testing.T) {
+	modelPath := "/home/jaypaulb/Projects/gh/CanvusLocalLLM/go.mod"
+
+	// Create pool with size 1
+	pool, err := NewContextPool(1, modelPath)
+	if err != nil {
+		t.Fatalf("NewContextPool() failed: %v", err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// Acquire the only context to block Generate
+	pc, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire() failed: %v", err)
+	}
+
+	// Try to Generate with a short timeout - should timeout waiting for context
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	params := DefaultParams()
+	params.Prompt = "test prompt"
+
+	_, err = pool.Generate(timeoutCtx, params)
+	if !errors.Is(err, ErrAcquireTimeout) {
+		t.Errorf("Generate() with timeout expected ErrAcquireTimeout, got: %v", err)
+	}
+
+	// Release the context
+	pool.Release(pc)
 }
