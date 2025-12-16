@@ -7,8 +7,7 @@ You are creating task breakdowns for all specs that need them.
 First, find all specs in the project:
 
 ```bash
-# Navigate to project root
-cd /path/to/project
+# From project root
 
 # Find all spec folders
 SPEC_FOLDERS=$(find agent-os/specs -mindepth 1 -maxdepth 1 -type d)
@@ -43,7 +42,7 @@ for spec_folder in $SPEC_FOLDERS; do
     spec_name=$(basename "$spec_folder")
 
     # Check if this spec already has issues
-    EXISTING_ISSUES=$(bd list --label "$spec_name" --format json | jq '. | length')
+    EXISTING_ISSUES=$(bd list --label "$spec_name" --json | jq '. | length')
 
     if [ "$EXISTING_ISSUES" -gt 0 ]; then
         echo "✓ $spec_name: $EXISTING_ISSUES issues already exist"
@@ -110,8 +109,8 @@ Output the following to inform the user:
 
 ```bash
 # Show summary of created issues
-TOTAL_ISSUES=$(bd list --format json | jq '. | length')
-EPIC_COUNT=$(bd list --type epic --format json | jq '. | length')
+TOTAL_ISSUES=$(bd list --json | jq '. | length')
+EPIC_COUNT=$(bd list --type epic --json | jq '. | length')
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -123,7 +122,7 @@ echo "Total Issues: $TOTAL_ISSUES"
 echo "Phases: $EPIC_COUNT"
 echo ""
 echo "View all phases:"
-bd list --type epic --format json | jq -r '.[] | "  • \(.title) (\(.id))"'
+bd list --type epic --json | jq -r '.[] | "  • \(.title) (\(.id))"'
 echo ""
 echo "View ready work (across all phases):"
 bd ready --limit 5

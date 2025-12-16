@@ -1,0 +1,24 @@
+{
+  "max_agents": 5,
+  "slots": {
+    "3": {
+      "organism_id": "CanvusLocalLLM-0oy",
+      "task_id": "a31dbc0",
+      "started_at": "2025-12-16T20:16:51+01:00",
+      "agent_type": "atom-writer"
+    },
+    "5": {
+      "organism_id": "CanvusLocalLLM-15am",
+      "task_id": "a3e8195",
+      "started_at": "2025-12-16T20:16:51+01:00",
+      "agent_type": "atom-writer"
+    },
+    "2": {
+      "organism_id": "CanvusLocalLLM-1es",
+      "task_id": "a6e0571",
+      "started_at": "2025-12-16T20:18:29+01:00",
+      "agent_type": "test-writer-organism"
+    }
+  },
+  "heartbeat_interval": 10
+}

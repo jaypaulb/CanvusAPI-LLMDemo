@@ -1,0 +1,15 @@
+{
+  "common_errors": [],
+  "best_practices": [],
+  "conflict_patterns": [],
+  "organism_specific": {
+    "database-layer": [],
+    "api-layer": [],
+    "ui-component": []
+  },
+  "metrics": {
+    "total_iterations": 0,
+    "total_organisms": 0,
+    "success_rate_trend": []
+  }
+}

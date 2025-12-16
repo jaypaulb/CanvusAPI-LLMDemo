@@ -68,7 +68,7 @@ When working in beads mode, integrate testing with issue tracking:
 bv --recipe actionable --format json | jq '.[] | select(.tags[]? == "test-gap")'
 
 # Check test coverage gaps
-bd list --tag untested --format json
+bd list --tag untested --json
 
 # After writing tests, verify test issues closed
 bd show bd-601 --status  # Verify test issue closed

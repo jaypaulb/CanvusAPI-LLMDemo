@@ -23,18 +23,16 @@ ls -la agent-os/product/
 
 ### Step 2: Handle Existing Files (First Run Only)
 
-{{IF product files exist}}
+**If product files exist:**
 
-**Read existing files:**
+Read existing files:
 ```bash
 cat agent-os/product/mission.md
 cat agent-os/product/roadmap.md
 cat agent-os/product/tech-stack.md
 ```
 
-**Summarize findings to user:**
-
-Display what you found:
+Summarize findings to user:
 ```
 I found existing product planning documentation:
 
@@ -43,9 +41,7 @@ I found existing product planning documentation:
 **Tech Stack**: [Key technologies listed, e.g., "React, Node.js, PostgreSQL, etc."]
 ```
 
-**Use AskUserQuestion tool to confirm completeness and fill gaps:**
-
-Ask the user using the AskUserQuestion tool:
+Use AskUserQuestion tool to confirm completeness and fill gaps:
 - Is the mission statement complete and accurate?
 - Are all phases in the roadmap clearly defined?
 - Is the tech stack documented for all layers (frontend, backend, database, deployment)?
@@ -58,9 +54,7 @@ Based on user responses, delegate to **product-planner** subagent to:
 - Add missing details
 - Refine existing content
 
-{{ELSE}}
-
-**No existing files - create from scratch:**
+**If no existing files - create from scratch:**
 
 Delegate to the **product-planner** subagent with the user's product vision (if provided).
 
@@ -73,8 +67,6 @@ The product-planner will create:
 - `agent-os/product/mission.md` with product vision and strategy
 - `agent-os/product/roadmap.md` with phased development plan
 - `agent-os/product/tech-stack.md` documenting tech stack choices
-
-{{ENDIF}}
 
 Once complete (whether updated or created), proceed immediately to PHASE 2.
 

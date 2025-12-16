@@ -45,7 +45,48 @@ Each level is handled by a specialized agent and must complete before the next l
 
 ---
 
+## Phase 0: Define Templates & Interfaces (Optional but Recommended)
+
+### Agent: `template-designer`
+
+**When to use:** Features with complex types, shared interfaces, or API contracts
+
+**Responsibility:** Define interfaces, schemas, types, and protocols before implementation begins.
+
+**Skip if:** Building simple feature with no custom types (e.g., pure utility functions)
+
+**Workflow:**
+
+Run template-designer if your spec includes:
+- Custom types or interfaces needed by multiple atoms
+- API request/response schemas
+- Database schema definitions
+- Shared data structures
+- Protocol definitions or contracts
+
+**Output:**
+- TypeScript interfaces in `types/` or `interfaces/`
+- JSON schemas in `schemas/`
+- Protocol definitions
+- Type definitions that atoms, molecules, and organisms will import
+
+**Benefits:**
+- Prevents rework when types change during implementation
+- Ensures type consistency across all layers
+- Provides clear contracts for atoms to implement
+- Enables parallel development (different agents can work simultaneously knowing the types)
+
+**Example scenarios:**
+- ✅ **Use Phase 0**: Building authentication system (User interface, AuthToken type, LoginRequest/Response schemas needed by API and database layers)
+- ✅ **Use Phase 0**: E-commerce cart (Product, CartItem, Order interfaces shared across multiple organisms)
+- ❌ **Skip Phase 0**: Simple form validators (just pure functions, no custom types needed)
+- ❌ **Skip Phase 0**: Utility functions for date formatting (uses built-in types only)
+
+---
+
 ## Phase 1: Foundation - Atoms
+
+**Note:** This follows template definition (if Phase 0 was used). If templates were defined in Phase 0, atoms should import and use them.
 
 ### Agent: `atom-writer`
 

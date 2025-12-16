@@ -95,8 +95,6 @@ func ResizeToSquare(img image.Image, size ResolutionSize) image.Image {
 // This is a pure function with no side effects.
 func ConvertToRGB(img image.Image) *image.RGBA {
 	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
 
 	// Check if already RGBA
 	if rgba, ok := img.(*image.RGBA); ok {

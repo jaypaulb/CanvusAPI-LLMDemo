@@ -10,8 +10,8 @@ This command:
 
 **Prerequisites**:
 - Beads issues must be created (run `/autonomous-plan` or `/create-tasks` first)
-- `CLAUDE_CODE_OAUTH_TOKEN` environment variable must be set (run `claude setup-token` to generate)
-- Harness repo configured in `~/agent-os/config.yml` (autonomous_harness_repo, autonomous_harness_branch)
+- Autonomous coding harness must be installed at `/home/jaypaulb/Projects/gh/Linear-Coding-Agent-Harness/`
+- `CLAUDE_CODE_OAUTH_TOKEN` environment variable must be set
 
 ---
 
@@ -32,7 +32,7 @@ else
 fi
 
 # Check for issues
-ISSUE_COUNT=$(bd list --format json | jq '. | length')
+ISSUE_COUNT=$(bd list --json | jq '. | length')
 echo "Found $ISSUE_COUNT Beads issues across all phases"
 
 if [ "$ISSUE_COUNT" -eq 0 ]; then
@@ -43,7 +43,7 @@ fi
 # Show all phases
 echo ""
 echo "Phases in this project:"
-bd list --type epic --format json | jq -r '.[] | "  • \(.title) (\(.id))"'
+bd list --type epic --json | jq -r '.[] | "  • \(.title) (\(.id))"'
 
 # Show ready work across all phases
 echo ""
@@ -66,7 +66,7 @@ read -p "Choice [1/2]: " filter_choice
 if [ "$filter_choice" = "2" ]; then
     # List available phases
     echo "Available phases:"
-    bd list --type epic --format json | jq -r '.[] | "  \(.labels[] | select(startswith(\"phase-\"))): \(.title)"'
+    bd list --type epic --json | jq -r '.[] | "  \(.labels[] | select(startswith(\"phase-\"))): \(.title)"'
 
     read -p "Enter phase label (e.g., phase-1): " phase_label
 
@@ -168,39 +168,87 @@ fi
 
 ## PHASE 2: Install/Update Harness
 
-The autonomous harness is cloned INTO the project directory. This ensures the harness's `BEADS_ROOT` points to the project, making beads integration seamless.
+The autonomous harness is managed as a dependency. Check if it's installed, and install/update if needed:
 
 ```bash
 # Read harness config from agent-os/config.yml
 HARNESS_REPO=$(grep "autonomous_harness_repo:" ~/agent-os/config.yml | cut -d' ' -f2)
 HARNESS_BRANCH=$(grep "autonomous_harness_branch:" ~/agent-os/config.yml | cut -d' ' -f2)
-
-# Clone INTO project directory (not home directory)
-HARNESS_PATH="$PROJECT_ROOT/.harness"
+HARNESS_PATH="$(pwd)/.harness"
 
 echo "Harness repository: $HARNESS_REPO"
 echo "Harness branch: $HARNESS_BRANCH"
-echo "Install location: $HARNESS_PATH (inside project)"
+echo "Harness path: $HARNESS_PATH"
+
+# Extract repo identifier for fallback attempts
+# Support both SSH (git@github.com:user/repo.git) and HTTPS (https://github.com/user/repo.git)
+REPO_IDENTIFIER=$(echo "$HARNESS_REPO" | sed -E 's#^(https://|git@)github\.com[:/](.+)\.git$#\2#')
 
 # Install or update harness
 if [ -d "$HARNESS_PATH" ]; then
   echo "✓ Harness found at $HARNESS_PATH"
   echo "Updating harness..."
-  cd "$HARNESS_PATH"
-  git fetch origin
-  git checkout "$HARNESS_BRANCH"
-  git pull origin "$HARNESS_BRANCH"
-  cd -
+  git -C "$HARNESS_PATH" fetch origin
+  git -C "$HARNESS_PATH" checkout "$HARNESS_BRANCH"
+  git -C "$HARNESS_PATH" pull origin "$HARNESS_BRANCH"
 else
-  echo "Installing harness into project..."
-  git clone "$HARNESS_REPO" "$HARNESS_PATH"
-  cd "$HARNESS_PATH"
-  git checkout "$HARNESS_BRANCH"
-  cd -
+  echo "Installing harness..."
+
+  # Try git clone with automatic fallback: SSH -> HTTPS -> gh CLI
+  CLONE_SUCCESS=false
+
+  # Method 1: Try configured URL first
+  echo "Attempting clone with configured URL..."
+  if git clone "$HARNESS_REPO" "$HARNESS_PATH" 2>/dev/null; then
+    CLONE_SUCCESS=true
+    echo "✓ Cloned successfully with configured URL"
+  else
+    echo "Failed with configured URL, trying alternatives..."
+
+    # Method 2: Try SSH if configured URL was HTTPS
+    if [[ "$HARNESS_REPO" == https://* ]]; then
+      SSH_URL="git@github.com:${REPO_IDENTIFIER}.git"
+      echo "Attempting SSH: $SSH_URL"
+      if git clone "$SSH_URL" "$HARNESS_PATH" 2>/dev/null; then
+        CLONE_SUCCESS=true
+        echo "✓ Cloned successfully with SSH"
+      fi
+    fi
+
+    # Method 3: Try HTTPS if configured URL was SSH
+    if [ "$CLONE_SUCCESS" = false ] && [[ "$HARNESS_REPO" == git@* ]]; then
+      HTTPS_URL="https://github.com/${REPO_IDENTIFIER}.git"
+      echo "Attempting HTTPS: $HTTPS_URL"
+      if git clone "$HTTPS_URL" "$HARNESS_PATH" 2>/dev/null; then
+        CLONE_SUCCESS=true
+        echo "✓ Cloned successfully with HTTPS"
+      fi
+    fi
+
+    # Method 4: Try gh CLI as last resort
+    if [ "$CLONE_SUCCESS" = false ] && command -v gh &> /dev/null; then
+      echo "Attempting gh CLI: gh repo clone ${REPO_IDENTIFIER}"
+      if gh repo clone "$REPO_IDENTIFIER" "$HARNESS_PATH" 2>/dev/null; then
+        CLONE_SUCCESS=true
+        echo "✓ Cloned successfully with gh CLI"
+      fi
+    fi
+
+    # Check if any method succeeded
+    if [ "$CLONE_SUCCESS" = false ]; then
+      echo "❌ ERROR: Failed to clone harness repository"
+      echo "Tried: configured URL, SSH, HTTPS, gh CLI"
+      echo "Repository: $REPO_IDENTIFIER"
+      exit 1
+    fi
+  fi
+
+  # Checkout specified branch
+  git -C "$HARNESS_PATH" checkout "$HARNESS_BRANCH"
 
   # Add .harness to .gitignore if not already there
-  if ! grep -q "^\.harness/$" "$PROJECT_ROOT/.gitignore" 2>/dev/null; then
-    echo ".harness/" >> "$PROJECT_ROOT/.gitignore"
+  if ! grep -q "^\.harness/$" .gitignore 2>/dev/null; then
+    echo ".harness/" >> .gitignore
     echo "✓ Added .harness/ to .gitignore"
   fi
 fi
@@ -217,9 +265,104 @@ if [ -f "$HARNESS_PATH/beads_config.py" ]; then
   echo "✓ Beads integration confirmed"
 
   # Patch BEADS_ROOT to point to project root (parent of .harness/)
-  # This ensures bd commands use project's .beads/ directory
   sed -i 's|BEADS_ROOT = Path(__file__).parent.resolve()|BEADS_ROOT = Path(__file__).parent.parent.resolve()|' "$HARNESS_PATH/beads_config.py"
   echo "✓ Patched BEADS_ROOT to point to project root"
+
+  # Patch prompts to use relative paths instead of hardcoded paths
+  sed -i 's|/home/jaypaulb/Projects/gh/Linear-Coding-Agent-Harness/.beads_project.json|.beads_project.json|g' "$HARNESS_PATH/prompts/coding_prompt.md"
+  sed -i 's|/home/jaypaulb/Projects/gh/Linear-Coding-Agent-Harness/agent-os/product/|agent-os/product/|g' "$HARNESS_PATH/prompts/initializer_prompt.md"
+  echo "✓ Patched prompts to use relative paths"
+
+  # Add git push fallback logic to coding_prompt.md if not already present
+  if ! grep -q "PUSH_SUCCESS=false" "$HARNESS_PATH/prompts/coding_prompt.md"; then
+    cat >> "$HARNESS_PATH/prompts/coding_prompt.md" <<'EOF'
+
+## Commit and push your work:
+
+After implementing and testing, commit your changes with a descriptive message. Use automatic fallback for git push operations:
+
+**Git push with automatic fallback (SSH > HTTPS > gh CLI):**
+
+```bash
+# Stage your changes
+git add [files-you-modified]
+
+# Commit with descriptive message
+git commit -m "Your descriptive commit message"
+
+# Push with automatic fallback
+PUSH_SUCCESS=false
+
+# Method 1: Try normal git push (uses configured remote)
+echo "Attempting git push..."
+if git push 2>/dev/null; then
+  PUSH_SUCCESS=true
+  echo "✓ Pushed successfully"
+else
+  echo "Push failed, trying alternatives..."
+
+  # Get current remote URL
+  REMOTE_URL=$(git config --get remote.origin.url)
+
+  # Method 2: If remote is HTTPS, try SSH
+  if [[ "$REMOTE_URL" == https://* ]] && [ "$PUSH_SUCCESS" = false ]; then
+    # Extract repo identifier and convert to SSH
+    REPO_ID=$(echo "$REMOTE_URL" | sed -E 's#^https://github\.com/(.+)\.git$#\1#')
+    SSH_URL="git@github.com:${REPO_ID}.git"
+
+    echo "Attempting SSH push: $SSH_URL"
+    if git push "$SSH_URL" $(git branch --show-current) 2>/dev/null; then
+      PUSH_SUCCESS=true
+      echo "✓ Pushed successfully with SSH"
+      # Update remote to use SSH for future pushes
+      git remote set-url origin "$SSH_URL"
+    fi
+  fi
+
+  # Method 3: If remote is SSH, try HTTPS
+  if [[ "$REMOTE_URL" == git@* ]] && [ "$PUSH_SUCCESS" = false ]; then
+    # Extract repo identifier and convert to HTTPS
+    REPO_ID=$(echo "$REMOTE_URL" | sed -E 's#^git@github\.com:(.+)\.git$#\1#')
+    HTTPS_URL="https://github.com/${REPO_ID}.git"
+
+    echo "Attempting HTTPS push: $HTTPS_URL"
+    if git push "$HTTPS_URL" $(git branch --show-current) 2>/dev/null; then
+      PUSH_SUCCESS=true
+      echo "✓ Pushed successfully with HTTPS"
+      # Update remote to use HTTPS for future pushes
+      git remote set-url origin "$HTTPS_URL"
+    fi
+  fi
+
+  # Method 4: Try gh CLI as last resort
+  if [ "$PUSH_SUCCESS" = false ] && command -v gh &> /dev/null; then
+    echo "Attempting gh CLI push..."
+    if gh repo sync 2>/dev/null; then
+      PUSH_SUCCESS=true
+      echo "✓ Synced successfully with gh CLI"
+    fi
+  fi
+
+  # Check if any method succeeded
+  if [ "$PUSH_SUCCESS" = false ]; then
+    echo "❌ ERROR: Failed to push changes"
+    echo "Tried: git push, SSH, HTTPS, gh CLI"
+    echo "Please check your git credentials and network connection"
+    exit 1
+  fi
+fi
+```
+
+**Commit message guidelines:**
+- Use descriptive, concise messages
+- Start with a verb (Add, Fix, Update, Implement, etc.)
+- Reference the issue/task being implemented
+- Example: "Implement user authentication endpoints (Phase 1, Issue #123)"
+EOF
+    echo "✓ Added git push fallback logic to coding_prompt.md"
+  else
+    echo "✓ Git push fallback already present in coding_prompt.md"
+  fi
 else
   echo "✗ beads_config.py not found. Harness may not be converted to Beads."
   exit 1
@@ -244,8 +387,8 @@ if [ ! -f ".beads_project.json" ]; then
 
   # Get project metadata from Beads
   # Find all phase epics
-  EPIC_COUNT=$(bd list --type epic --format json | jq '. | length')
-  FIRST_EPIC_ID=$(bd list --type epic --format json | jq -r '.[0].id')
+  EPIC_COUNT=$(bd list --type epic --json | jq '. | length')
+  FIRST_EPIC_ID=$(bd list --type epic --json | jq -r '.[0].id')
   PROJECT_NAME=$(basename "$(pwd)")
 
   cat > .beads_project.json <<EOF
@@ -298,8 +441,6 @@ fi
 Launch the harness with unlimited iterations:
 
 ```bash
-cd "$PROJECT_ROOT"
-
 # Set environment variables
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN}"
 
@@ -367,10 +508,10 @@ Session 2 Summary:
 
 ## PHASE 6: Monitor Progress
 
-While the harness runs, you can monitor progress in another terminal:
+While the harness runs, you can monitor progress in another terminal from project root:
 
 ```bash
-cd $PROJECT_ROOT  # or your project directory
+# Run from project root (where .beads/ is located)
 
 # View all issues
 bd list --json | jq -r '.[] | "\(.status) | \(.id): \(.title)"' | column -t -s '|'
@@ -452,8 +593,7 @@ Auto-build interrupted.
 **Progress Saved**:
 All work is tracked in .beads/issues.jsonl (git-backed).
 
-**Resume anytime**:
-cd $PROJECT_ROOT
+**Resume anytime** (from project root):
 /auto-build
 
 The harness will pick up where it left off using bd ready to find the next unblocked issue.
