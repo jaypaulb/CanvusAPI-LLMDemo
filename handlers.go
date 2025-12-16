@@ -1176,6 +1176,24 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	// Perform OCR
 	ocrText, err := performGoogleVisionOCR(ctx, imageData, config, log)
 	if err != nil {
+		// Record failed OCR processing to database
+		recordProcessingHistory(
+			ctx,
+			repo,
+			correlationID,
+			config.CanvasID,
+			imageID,
+			"ocr_processing",
+			"Snapshot OCR",
+			"",
+			"google_vision",
+			0,
+			0,
+			int(time.Since(start).Milliseconds()),
+			"error",
+			err.Error(),
+			log,
+		)
 		log.Error("failed to perform OCR", zap.Error(err))
 		errorMessage := " Failed to process image.\n\n"
 		if strings.Contains(err.Error(), "no text found") {
@@ -1226,6 +1244,25 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 		log.Warn("failed to delete snapshot", zap.Error(err))
 	}
 
+
+	// Record successful OCR processing to database
+	recordProcessingHistory(
+		ctx,
+		repo,
+		correlationID,
+		config.CanvasID,
+		imageID,
+		"ocr_processing",
+		"Snapshot OCR",
+		ocrText,
+		"google_vision",
+		0, // OCR doesn't report input tokens
+		len(ocrText)/4, // Estimate output tokens
+		int(time.Since(start).Milliseconds()),
+		"success",
+		"",
+		log,
+	)
 	// Update metrics
 	atomic.AddInt64(&handlerMetrics.processedImages, 1)
 	metricsMutex.Lock()
@@ -1416,6 +1453,24 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 
 	if err != nil {
 		metricsLogger.EndInference(inferenceTimer, 0, 0)
+		// Record failed PDF processing to database
+		recordProcessingHistory(
+			ctx,
+			repo,
+			correlationID,
+			config.CanvasID,
+			update["id"].(string),
+			"pdf_analysis",
+			pdfText,
+			"",
+			pdfConfig.OpenAIPDFModel,
+			len(pdfText)/4,
+			0,
+			int(time.Since(start).Milliseconds()),
+			"error",
+			err.Error(),
+			log,
+		)
 		log.Error("PDF analysis failed", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": " Failed to generate PDF analysis",
@@ -1488,6 +1543,25 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 	deleteTriggeringWidget(client, "note", processingNoteID, log)
 	deleteTriggeringWidget(client, "image", update["id"].(string), log)
 
+
+	// Record successful PDF processing to database
+	recordProcessingHistory(
+		ctx,
+		repo,
+		correlationID,
+		config.CanvasID,
+		update["id"].(string),
+		"pdf_analysis",
+		pdfText,
+		content,
+		pdfConfig.OpenAIPDFModel,
+		promptTokens,
+		completionTokens,
+		int(time.Since(start).Milliseconds()),
+		"success",
+		"",
+		log,
+	)
 	atomic.AddInt64(&handlerMetrics.processedPDFs, 1)
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(start)
@@ -1643,7 +1717,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 		zap.Int("widget_count", len(widgets)))
 
 	// Generate and process the precis
-	if err := processCanvusPrecis(ctx, client, update, widgets, config, log); err != nil {
+	if err := processCanvusPrecis(ctx, client, update, widgets, config, log, repo, correlationID, start); err != nil {
 		log.Error("failed to process Canvus precis", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
@@ -1689,7 +1763,7 @@ func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *c
 }
 
 // processCanvusPrecis generates and creates a summary of the canvas
-func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config, log *logging.Logger) error {
+func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config, log *logging.Logger, repo *db.Repository, correlationID string, start time.Time) error {
 	log.Info("starting Canvus Precis processing")
 
 	// Create a canvas-specific config that uses the canvas model
@@ -1782,6 +1856,24 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	rawResponse, err := generateAIResponse(string(widgetsJSON), &canvasConfig, systemMessage, log)
 	if err != nil {
 		metricsLogger.EndInference(inferenceTimer, 0, 0)
+		// Record failed canvas analysis to database
+		recordProcessingHistory(
+			ctx,
+			repo,
+			correlationID,
+			config.CanvasID,
+			update["id"].(string),
+			"canvas_analysis",
+			string(widgetsJSON),
+			"",
+			canvasConfig.OpenAINoteModel,
+			len(widgetsJSON)/4,
+			0,
+			int(time.Since(start).Milliseconds()),
+			"error",
+			err.Error(),
+			log,
+		)
 		deleteTriggeringWidget(client, "note", processingNoteID, log)
 		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string), config, log)
 	}
@@ -1815,6 +1907,25 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	// Clean up processing note
 	deleteTriggeringWidget(client, "note", processingNoteID, log)
 
+
+	// Record successful canvas analysis to database
+	recordProcessingHistory(
+		ctx,
+		repo,
+		correlationID,
+		config.CanvasID,
+		update["id"].(string),
+		"canvas_analysis",
+		string(widgetsJSON),
+		content,
+		config.OpenAINoteModel,
+		promptTokens,
+		completionTokens,
+		int(time.Since(start).Milliseconds()),
+		"success",
+		"",
+		log,
+	)
 	return nil
 }
 
