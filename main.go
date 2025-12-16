@@ -15,6 +15,7 @@ import (
 	"go_backend/imagegen"
 	"go_backend/logging"
 	"go_backend/sdruntime"
+	"go_backend/shutdown"
 	"go_backend/webui/auth"
 
 	"github.com/joho/godotenv"
@@ -37,6 +38,9 @@ const (
 )
 
 func main() {
+	// Track which signal caused shutdown (if any)
+	var shutdownSignal os.Signal
+
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
 		// Use fmt here since logger isn't initialized yet
@@ -52,15 +56,14 @@ func main() {
 		fmt.Printf("Failed to initialize logger: %v\n", err)
 		os.Exit(core.ExitCodeError)
 	}
-	defer func() {
-		if syncErr := logger.Sync(); syncErr != nil {
-			fmt.Printf("Failed to sync logger: %v\n", syncErr)
-		}
-	}()
 
 	// Run startup validation before heavy operations
 	exitCode := runStartupValidation(logger, isDevelopment)
 	if exitCode != core.ExitCodeSuccess {
+		// Sync logger before exit
+		if syncErr := logger.Sync(); syncErr != nil {
+			fmt.Printf("Failed to sync logger: %v\n", syncErr)
+		}
 		os.Exit(exitCode)
 	}
 
@@ -99,6 +102,20 @@ func main() {
 		config.AllowSelfSignedCerts,
 	)
 
+	// Initialize shutdown manager with 60-second timeout
+	shutdownManager := shutdown.NewManager(logger.Zap(), shutdown.WithTimeout(60*time.Second))
+
+	// Register logger sync as highest priority (runs first during shutdown)
+	shutdownManager.Register("logger-sync", 5, func(ctx context.Context) error {
+		logger.Info("Syncing logger...")
+		if syncErr := logger.Sync(); syncErr != nil {
+			logger.Warn("Failed to sync logger during shutdown", zap.Error(syncErr))
+			return syncErr
+		}
+		logger.Info("Logger synced")
+		return nil
+	})
+
 	// Initialize SD runtime and imagegen processor (optional)
 	var sdPool *sdruntime.ContextPool
 	var imageProcessor *imagegen.Processor
@@ -109,30 +126,19 @@ func main() {
 		logger.Warn("SD runtime initialization failed, image generation disabled",
 			zap.Error(err))
 	} else if sdPool != nil {
-		// Ensure graceful shutdown of SD pool
-		defer func() {
+		// Register SD pool shutdown (priority 30 - resource cleanup)
+		shutdownManager.Register("sd-pool", 30, func(ctx context.Context) error {
 			logger.Info("Shutting down SD context pool...")
 			if closeErr := sdPool.Close(); closeErr != nil {
 				logger.Error("Failed to close SD pool", zap.Error(closeErr))
+				return closeErr
 			}
 			logger.Info("SD context pool closed")
-		}()
+			return nil
+		})
 	}
 
-	// Create context that can be cancelled
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		logger.Info("Received interrupt signal. Shutting down...")
-		cancel()
-	}()
-
-	// Start monitoring with context
+	// Start monitoring with context from shutdown manager
 	monitor := NewMonitor(client, config, logger)
 
 	// Wire in the imagegen processor if available
@@ -141,13 +147,45 @@ func main() {
 		logger.Info("Image generation enabled via SD runtime")
 	}
 
-	go monitor.Start(ctx)
+	go monitor.Start(shutdownManager.Context())
 
 	// Initialize and start web UI server
 	httpServer, err := setupWebServer(config, logger)
 	if err != nil {
 		logger.Fatal("Failed to setup web server", zap.Error(err))
 	}
+
+	// Register HTTP server shutdown (priority 20 - service cleanup)
+	shutdownManager.Register("http-server", 20, func(ctx context.Context) error {
+		logger.Info("Shutting down web server...")
+		shutdownCtx, cancel := context.WithTimeout(ctx, DefaultShutdownTimeout)
+		defer cancel()
+
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("Web server shutdown error", zap.Error(err))
+			return err
+		}
+		logger.Info("Web server shutdown complete")
+		return nil
+	})
+
+	// Register temp file cleanup (priority 45 - final cleanup)
+	shutdownManager.Register("cleanup-downloads", 45, shutdown.CleanupDownloads(logger.Zap(), config.DownloadsDir))
+
+	// Start shutdown manager (signal handling)
+	shutdownManager.Start()
+
+	// Capture which signal triggered shutdown for exit code determination
+	// We need to intercept signals before the manager to capture them
+	sigChan := make(chan os.Signal, 1)
+	signalNotify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		shutdownSignal = sig
+		logger.Info("Received shutdown signal",
+			zap.String("signal", sig.String()),
+		)
+	}()
 
 	// Start web server in a goroutine
 	serverErrChan := make(chan error, 1)
@@ -163,23 +201,54 @@ func main() {
 
 	// Wait for shutdown signal or server error
 	select {
-	case <-ctx.Done():
-		// Gracefully shutdown the HTTP server
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
-		defer shutdownCancel()
-
-		logger.Info("Shutting down web server...")
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Web server shutdown error", zap.Error(err))
-		} else {
-			logger.Info("Web server shutdown complete")
-		}
+	case <-shutdownManager.Context().Done():
+		// Normal shutdown via signal
+		logger.Info("Shutdown initiated")
 	case err := <-serverErrChan:
+		// Server error - set exit code to error
 		logger.Error("Web server error", zap.Error(err))
-		cancel() // Trigger shutdown of other components
+		exitCode = core.ExitCodeError
 	}
 
-	logger.Info("Goodbye!")
+	// Execute graceful shutdown sequence
+	if shutdownErr := shutdownManager.Shutdown(); shutdownErr != nil {
+		logger.Error("Shutdown completed with errors", zap.Error(shutdownErr))
+		// Only override exit code if we don't already have an error
+		if exitCode == core.ExitCodeSuccess {
+			exitCode = core.ExitCodeError
+		}
+	}
+
+	// Determine final exit code based on shutdown signal
+	// Only set signal-based exit codes if no error occurred
+	if exitCode == core.ExitCodeSuccess && shutdownSignal != nil {
+		switch shutdownSignal {
+		case os.Interrupt:
+			exitCode = core.ExitCodeSIGINT
+		case syscall.SIGTERM:
+			exitCode = core.ExitCodeSIGTERM
+		}
+	}
+
+	logger.Info("Goodbye!",
+		zap.Int("exit_code", exitCode),
+		zap.String("exit_reason", core.ExitCodeName(exitCode)),
+	)
+
+	// Final logger sync before exit
+	if syncErr := logger.Sync(); syncErr != nil {
+		fmt.Printf("Failed to sync logger: %v\n", syncErr)
+	}
+
+	os.Exit(exitCode)
+}
+
+// signalNotify is a wrapper around signal.Notify for easier testing.
+// It can be replaced with a mock in tests.
+var signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
+	// Use a different channel from shutdown manager's internal channel
+	// to capture the signal type before manager handles it
+	signal.Notify(c, sig...)
 }
 
 // setupWebServer creates and configures the HTTP server with authentication.
