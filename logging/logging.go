@@ -13,5 +13,5 @@ func LogHandler(format string, v ...interface{}) {
 	fmt.Println(message)
 
 	// Log to file with timestamp and source info
-	log.Printf(message)
+	log.Print(message)
 }
