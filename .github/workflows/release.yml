@@ -1,0 +1,285 @@
+# CanvusLocalLLM Release Workflow
+# Builds for Windows with CUDA support and creates installer
+#
+# Trigger: Push tags matching v* (e.g., v1.0.0)
+# Outputs: Windows installer, executables, checksums
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 1.0.0)'
+        required: false
+        default: 'dev'
+
+env:
+  GO_VERSION: '1.24'
+  CUDA_VERSION: '12.4.0'
+
+jobs:
+  # =============================================================================
+  # Windows Build Job
+  # =============================================================================
+  build-windows:
+    name: Build Windows (CUDA)
+    runs-on: windows-latest
+
+    steps:
+      # -------------------------------------------------------------------------
+      # Setup
+      # -------------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ github.event.inputs.version }}" -ne "dev") {
+            $version = "${{ github.event.inputs.version }}"
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}" -replace '^v', ''
+          } else {
+            $version = "0.0.0-dev"
+          }
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+          echo "Building version: $version"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.18
+        id: cuda-toolkit
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev"]'
+
+      - name: Verify CUDA installation
+        shell: pwsh
+        run: |
+          echo "CUDA_PATH: $env:CUDA_PATH"
+          nvcc --version
+          echo "CUDA Toolkit installed successfully"
+
+      # -------------------------------------------------------------------------
+      # Build llama.cpp with CUDA
+      # -------------------------------------------------------------------------
+      - name: Clone llama.cpp
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/ggerganov/llama.cpp.git deps/llama.cpp
+
+      - name: Build llama.cpp (CUDA)
+        shell: pwsh
+        run: |
+          cd deps/llama.cpp
+          mkdir build
+          cd build
+          cmake .. `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DLLAMA_CUDA=ON `
+            -DLLAMA_CUBLAS=ON `
+            -DLLAMA_NATIVE=OFF `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_EXAMPLES=ON `
+            -DLLAMA_BUILD_SERVER=ON
+          cmake --build . --config Release -j $env:NUMBER_OF_PROCESSORS
+
+          # List built artifacts
+          echo "Built llama.cpp artifacts:"
+          Get-ChildItem -Path . -Recurse -Include "*.dll","*.exe" | Select-Object FullName
+
+      - name: Copy llama.cpp artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path lib
+
+          # Copy DLLs
+          Get-ChildItem -Path deps/llama.cpp/build -Recurse -Filter "*.dll" | ForEach-Object {
+            Copy-Item $_.FullName -Destination lib/
+            echo "Copied: $($_.Name)"
+          }
+
+          # Copy llama-server if exists
+          $server = Get-ChildItem -Path deps/llama.cpp/build -Recurse -Filter "llama-server.exe" | Select-Object -First 1
+          if ($server) {
+            Copy-Item $server.FullName -Destination lib/
+            echo "Copied: llama-server.exe"
+          }
+
+      # -------------------------------------------------------------------------
+      # Build stable-diffusion.cpp with CUDA
+      # -------------------------------------------------------------------------
+      - name: Clone stable-diffusion.cpp
+        shell: pwsh
+        run: |
+          git clone --recursive https://github.com/leejet/stable-diffusion.cpp.git deps/stable-diffusion.cpp
+
+      - name: Build stable-diffusion.cpp (CUDA)
+        shell: pwsh
+        run: |
+          cd deps/stable-diffusion.cpp
+          mkdir build
+          cd build
+          cmake .. `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DSD_CUBLAS=ON `
+            -DBUILD_SHARED_LIBS=OFF
+          cmake --build . --config Release -j $env:NUMBER_OF_PROCESSORS
+
+          # List built artifacts
+          echo "Built stable-diffusion.cpp artifacts:"
+          Get-ChildItem -Path . -Recurse -Include "*.dll","*.exe","sd.exe" | Select-Object FullName
+
+      - name: Copy stable-diffusion.cpp artifacts
+        shell: pwsh
+        run: |
+          # Copy DLLs
+          Get-ChildItem -Path deps/stable-diffusion.cpp/build -Recurse -Filter "*.dll" | ForEach-Object {
+            Copy-Item $_.FullName -Destination lib/
+            echo "Copied: $($_.Name)"
+          }
+
+          # Copy sd executable if exists
+          $sd = Get-ChildItem -Path deps/stable-diffusion.cpp/build -Recurse -Filter "sd.exe" | Select-Object -First 1
+          if ($sd) {
+            Copy-Item $sd.FullName -Destination lib/
+            echo "Copied: sd.exe"
+          }
+
+      # -------------------------------------------------------------------------
+      # Build Go Application
+      # -------------------------------------------------------------------------
+      - name: Build Go application
+        shell: pwsh
+        env:
+          CGO_ENABLED: 0
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+
+          # Create bin directory for output
+          New-Item -ItemType Directory -Force -Path bin
+
+          # Build with version injection
+          go build -v `
+            -ldflags "-s -w -X main.Version=$version" `
+            -o bin/CanvusLocalLLM.exe `
+            .
+
+          echo "Built: bin/CanvusLocalLLM.exe"
+          Get-Item bin/CanvusLocalLLM.exe | Select-Object Name, Length
+
+      - name: Run Go tests
+        shell: pwsh
+        run: |
+          go test -v -race -timeout 300s ./...
+
+      # -------------------------------------------------------------------------
+      # Build NSIS Installer
+      # -------------------------------------------------------------------------
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y
+          echo "C:\Program Files (x86)\NSIS" >> $env:GITHUB_PATH
+
+      - name: Prepare installer files
+        shell: pwsh
+        run: |
+          # Verify bin directory has executable
+          if (-not (Test-Path "bin/CanvusLocalLLM.exe")) {
+            Write-Error "CanvusLocalLLM.exe not found in bin/"
+            exit 1
+          }
+
+          # Ensure example.env exists
+          if (-not (Test-Path "example.env")) {
+            Write-Error "example.env not found"
+            exit 1
+          }
+
+          # List files for installer
+          echo "Files for installer:"
+          Get-ChildItem -Path bin/
+          Get-ChildItem -Path lib/
+
+      - name: Build NSIS Installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+
+          cd installer/windows
+
+          # Build installer with version
+          makensis /DPRODUCT_VERSION=$version setup.nsi
+
+          # Rename output to include version
+          $installerName = "CanvusLocalLLM-$version-Setup.exe"
+          if (Test-Path "CanvusLocalLLM-0.1.0-Setup.exe") {
+            Rename-Item "CanvusLocalLLM-0.1.0-Setup.exe" $installerName
+          }
+
+          echo "Built installer: $installerName"
+          Get-ChildItem -Filter "*.exe"
+
+          # Move to dist directory
+          New-Item -ItemType Directory -Force -Path ../../dist
+          Move-Item "CanvusLocalLLM-*-Setup.exe" ../../dist/
+
+      # -------------------------------------------------------------------------
+      # Generate Checksums and Upload
+      # -------------------------------------------------------------------------
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          cd dist
+
+          # Generate SHA256 checksums
+          Get-ChildItem -Filter "*.exe" | ForEach-Object {
+            $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Out-File -Append -FilePath "checksums-windows.txt" -Encoding ASCII
+            echo "$hash  $($_.Name)"
+          }
+
+          # Also add standalone exe
+          Copy-Item ../bin/CanvusLocalLLM.exe .
+          $hash = (Get-FileHash -Path "CanvusLocalLLM.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  CanvusLocalLLM.exe" | Out-File -Append -FilePath "checksums-windows.txt" -Encoding ASCII
+
+          echo ""
+          echo "Checksums:"
+          Get-Content checksums-windows.txt
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            dist/*.exe
+            dist/checksums-windows.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Windows lib artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-libs
+          path: |
+            lib/*.dll
+            lib/*.exe
+          if-no-files-found: warn
+          retention-days: 30
