@@ -17,8 +17,9 @@ import (
 
 	"go_backend/canvusapi"
 	"go_backend/core"
-	"go_backend/logging"
 	"go_backend/db"
+	"go_backend/handlers"
+	"go_backend/logging"
 
 	"bytes"
 	"encoding/base64"
@@ -161,7 +162,7 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 		zap.String("widget_type", "Note"),
 	)
 
-	if err := validateUpdate(update); err != nil {
+	if err := handlers.ValidateUpdate(update); err != nil {
 		log.Error("invalid update", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
@@ -340,25 +341,6 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 
 	log.Info("completed processing note",
 		zap.Duration("duration", time.Since(start)))
-}
-
-// validateUpdate checks if an update contains required fields
-func validateUpdate(update Update) error {
-	id, hasID := update["id"].(string)
-	if !hasID || id == "" {
-		return fmt.Errorf("missing or empty ID")
-	}
-	widgetType, hasType := update["widget_type"].(string)
-	if !hasType || widgetType == "" {
-		return fmt.Errorf("missing Type")
-	}
-	if _, hasLocation := update["location"].(map[string]interface{}); !hasLocation {
-		return fmt.Errorf("missing Location")
-	}
-	if _, hasSize := update["size"].(map[string]interface{}); !hasSize {
-		return fmt.Errorf("missing Size")
-	}
-	return nil
 }
 
 // updateNoteWithRetry attempts to update a note with retries
@@ -1663,7 +1645,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	canvasConfig.OpenAINoteModel = canvasConfig.OpenAICanvasModel // Use canvas model for all AI calls
 
 	// Validate update
-	if err := validateUpdate(update); err != nil {
+	if err := handlers.ValidateUpdate(update); err != nil {
 		log.Error("invalid Canvus precis update", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return

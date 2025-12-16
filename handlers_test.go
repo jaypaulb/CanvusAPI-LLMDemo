@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"go_backend/handlers"
 	"go_backend/logging"
 )
 
@@ -133,9 +134,9 @@ func TestValidateUpdate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateUpdate(tt.update)
+			err := handlers.ValidateUpdate(tt.update)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("validateUpdate() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("handlers.ValidateUpdate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
