@@ -18,6 +18,7 @@ import (
 	"go_backend/canvusapi"
 	"go_backend/core"
 	"go_backend/logging"
+	"go_backend/db"
 
 	"bytes"
 	"encoding/base64"
@@ -100,8 +101,60 @@ func truncateText(text string, length int) string {
 	return text
 }
 
+// recordProcessingHistory records an AI processing operation to the database.
+// This is a helper function to avoid code duplication across handlers.
+// It performs async database write via the repository.
+func recordProcessingHistory(
+	ctx context.Context,
+	repo *db.Repository,
+	correlationID string,
+	canvasID string,
+	widgetID string,
+	operationType string,
+	prompt string,
+	response string,
+	modelName string,
+	inputTokens int,
+	outputTokens int,
+	durationMS int,
+	status string,
+	errorMessage string,
+	log *logging.Logger,
+) {
+	if repo == nil {
+		log.Debug("repository is nil, skipping database recording")
+		return
+	}
+
+	record := db.ProcessingRecord{
+		CorrelationID: correlationID,
+		CanvasID:      canvasID,
+		WidgetID:      widgetID,
+		OperationType: operationType,
+		Prompt:        truncateText(prompt, 5000),    // Limit prompt size
+		Response:      truncateText(response, 10000), // Limit response size
+		ModelName:     modelName,
+		InputTokens:   inputTokens,
+		OutputTokens:  outputTokens,
+		DurationMS:    durationMS,
+		Status:        status,
+		ErrorMessage:  errorMessage,
+	}
+
+	_, err := repo.InsertProcessingHistory(ctx, record)
+	if err != nil {
+		log.Warn("failed to record processing history to database",
+			zap.Error(err),
+			zap.String("correlation_id", correlationID))
+	} else {
+		log.Debug("processing history recorded",
+			zap.String("correlation_id", correlationID),
+			zap.String("operation_type", operationType))
+	}
+}
+
 // handleNote processes Note widget updates
-func handleNote(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+func handleNote(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
 	correlationID := generateCorrelationID()
 	noteID, _ := update["id"].(string)
 
@@ -179,6 +232,24 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 	rawResponse, err := generateAIResponse(aiPrompt, config, systemMessage, log)
 	if err != nil {
 		// End inference with error (0 tokens)
+		// Record failed processing to database
+		recordProcessingHistory(
+			ctx,
+			repo,
+			correlationID,
+			config.CanvasID,
+			noteID,
+			"text_generation",
+			aiPrompt,
+			"",
+			config.OpenAINoteModel,
+			len(aiPrompt)/4,
+			0,
+			int(time.Since(start).Milliseconds()),
+			"error",
+			err.Error(),
+			log,
+		)
 		metricsLogger.EndInference(inferenceTimer, 0, 0)
 		if err := handleAIError(ctx, client, update, err, baseText, config, log); err != nil {
 			log.Error("failed to create error note", zap.Error(err))
@@ -246,6 +317,25 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 	// Clear the processing status
 	clearProcessingStatus(client, noteID, baseText, config, log)
 
+
+	// Record successful processing to database
+	recordProcessingHistory(
+		ctx,
+		repo,
+		correlationID,
+		config.CanvasID,
+		noteID,
+		"text_generation",
+		aiPrompt,
+		rawResponse,
+		config.OpenAINoteModel,
+		promptTokens,
+		completionTokens,
+		int(time.Since(start).Milliseconds()),
+		"success",
+		"",
+		log,
+	)
 	// Update metrics
 	atomic.AddInt64(&handlerMetrics.processedNotes, 1)
 	metricsMutex.Lock()
@@ -956,7 +1046,7 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 }
 
 // handleSnapshot processes Snapshot widgets for handwriting recognition
-func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
 	correlationID := generateCorrelationID()
 	imageID := update["id"].(string)
 
@@ -1157,7 +1247,7 @@ Format your response as: {"type": "text", "content": "your analysis"}`
 }
 
 // handlePDFPrecis generates a summary of a PDF widget
-func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
 	correlationID := generateCorrelationID()
 	parentID, _ := update["parent_id"].(string)
 
@@ -1502,7 +1592,7 @@ func estimateTokenCount(text string) int {
 }
 
 // handleCanvusPrecis processes Canvus widget summaries
-func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
 	correlationID := generateCorrelationID()
 	canvasID := update["id"].(string)
 
@@ -1839,33 +1929,6 @@ func chunkPDFContent(content []byte, maxTokens int) []string {
 }
 
 // handleAIIcon processes AI icon updates
-func (m *Monitor) handleAIIcon(update Update) error {
-	title, _ := update["title"].(string)
-	parentID, _ := update["parent_id"].(string)
-
-	switch title {
-	case "AI_Icon_PDF_Precis":
-		// First check if the icon is placed on the shared canvas - if so, ignore it
-		if parentID == sharedCanvas.ID {
-			m.logger.Debug("ignoring PDF precis icon on shared canvas")
-			return nil
-		}
-
-		// Process the PDF once the icon is placed on a PDF widget
-		go handlePDFPrecis(update, m.client, m.config, m.logger)
-
-	case "AI_Icon_Canvus_Precis":
-		// For canvas precis, we want the parent to be the shared canvas
-		if parentID != sharedCanvas.ID {
-			return fmt.Errorf("AI_Icon_Canvus_Precis ParentID does not match SharedCanvasID")
-		}
-		go handleCanvusPrecis(update, m.client, m.config, m.logger)
-
-	default:
-		m.logger.Debug("unrecognized AI_Icon type", zap.String("title", title))
-	}
-	return nil
-}
 
 // Helper function to create processing notes (reduces duplication)
 func createProcessingNote(client *canvusapi.Client, update Update, config *core.Config, log *logging.Logger) (string, error) {

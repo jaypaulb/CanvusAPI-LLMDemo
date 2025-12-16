@@ -113,11 +113,14 @@ func main() {
 		logger.Fatal("Failed to initialize database", zap.Error(err))
 	}
 
-	// Create async writer for database operations (buffer size 100, 2 workers)
-	asyncWriter := db.NewAsyncWriter(database.DB(), 100, 2, logger.Zap())
+	// Create repository first (without async writer)
+	tempRepo := db.NewRepository(database, nil)
+	
+	// Create and start async writer with handler from repository
+	asyncWriter := db.NewAsyncWriter(tempRepo.CreateAsyncWriteHandler())
 	asyncWriter.Start()
-
-	// Create repository with async writer
+	
+	// Create final repository with async writer attached
 	repository := db.NewRepository(database, asyncWriter)
 	logger.Info("Database and repository initialized")
 
