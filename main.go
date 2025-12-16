@@ -3,62 +3,64 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/logging"
 
 	"github.com/joho/godotenv"
+	"go.uber.org/zap"
 )
-
-// setupLogging initializes application logging
-func setupLogging() (*os.File, error) {
-	logFile, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %w", err)
-	}
-	log.SetOutput(logFile)
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	return logFile, nil
-}
 
 func main() {
 	// Load .env file if it exists
 	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: .env file not found: %v", err)
+		// Use fmt here since logger isn't initialized yet
+		fmt.Printf("Warning: .env file not found: %v\n", err)
 	}
+
+	// Determine if running in development mode
+	isDevelopment := os.Getenv("DEV_MODE") == "true"
+
+	// Initialize structured logger early
+	logger, err := logging.NewLogger(isDevelopment, "app.log")
+	if err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if syncErr := logger.Sync(); syncErr != nil {
+			fmt.Printf("Failed to sync logger: %v\n", syncErr)
+		}
+	}()
 
 	// Load configuration
 	config, err := core.LoadConfig()
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		logger.Fatalf("Failed to load configuration: %v", err)
 	}
-
-	// Initialize logging
-	logFile, err := setupLogging()
-	if err != nil {
-		log.Fatalf("Failed to initialize logging: %v", err)
-	}
-	defer logFile.Close()
 
 	// Log configuration values
-	fmt.Printf("📝 Configuration loaded:\n")
-	fmt.Printf("  Server: %s\n", config.CanvusServerURL)
-	fmt.Printf("  Canvas: %s (ID: %s)\n", config.CanvasName, config.CanvasID)
-	fmt.Printf("  Max Retries: %d\n", config.MaxRetries)
-	fmt.Printf("  Retry Delay: %v\n", config.RetryDelay)
-	fmt.Printf("  AI Timeout: %v\n", config.AITimeout)
-	fmt.Printf("  Processing Timeout: %v\n", config.ProcessingTimeout)
-	fmt.Printf("  Max Concurrent: %d\n", config.MaxConcurrent)
-	fmt.Printf("  Downloads Directory: %s\n", config.DownloadsDir)
-	fmt.Printf("  Allow Self-Signed Certs: %v\n", config.AllowSelfSignedCerts)
+	logger.Info("Configuration loaded",
+		zap.String("server", config.CanvusServerURL),
+		zap.String("canvas", config.CanvasName),
+		zap.String("canvas_id", config.CanvasID),
+		zap.Int("max_retries", config.MaxRetries),
+		zap.Duration("retry_delay", config.RetryDelay),
+		zap.Duration("ai_timeout", config.AITimeout),
+		zap.Duration("processing_timeout", config.ProcessingTimeout),
+		zap.Int("max_concurrent", config.MaxConcurrent),
+		zap.String("downloads_dir", config.DownloadsDir),
+		zap.Bool("allow_self_signed_certs", config.AllowSelfSignedCerts),
+		zap.Bool("dev_mode", isDevelopment),
+	)
 
 	// Create downloads directory
 	if err := os.MkdirAll(config.DownloadsDir, 0755); err != nil {
-		log.Fatalf("Failed to create downloads directory: %v", err)
+		logger.Fatalf("Failed to create downloads directory: %v", err)
 	}
 
 	// Initialize Canvus client
@@ -78,15 +80,15 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Println("\n🛑 Received interrupt signal. Shutting down...")
+		logger.Info("Received interrupt signal. Shutting down...")
 		cancel()
 	}()
 
 	// Start monitoring with context
-	monitor := NewMonitor(client, config)
+	monitor := NewMonitor(client, config, logger)
 	go monitor.Start(ctx)
 
 	// Block until context is cancelled
 	<-ctx.Done()
-	fmt.Println("👋 Goodbye!")
+	logger.Info("Goodbye!")
 }

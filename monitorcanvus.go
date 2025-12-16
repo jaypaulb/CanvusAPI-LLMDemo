@@ -12,14 +12,16 @@ import (
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/logging"
 
-	"github.com/fatih/color"
+	"go.uber.org/zap"
 )
 
 // Monitor represents the canvas monitoring service
 type Monitor struct {
 	client     *canvusapi.Client
 	config     *core.Config
+	logger     *logging.Logger
 	done       chan struct{}
 	widgets    map[string]map[string]interface{}
 	widgetsMux sync.RWMutex
@@ -46,10 +48,11 @@ type SharedCanvas struct {
 var sharedCanvas SharedCanvas
 
 // NewMonitor creates a new Monitor instance
-func NewMonitor(client *canvusapi.Client, cfg *core.Config) *Monitor {
+func NewMonitor(client *canvusapi.Client, cfg *core.Config, logger *logging.Logger) *Monitor {
 	return &Monitor{
 		client:     client,
 		config:     cfg,
+		logger:     logger,
 		done:       make(chan struct{}),
 		widgets:    make(map[string]map[string]interface{}),
 		widgetsMux: sync.RWMutex{},
@@ -68,11 +71,12 @@ func (m *Monitor) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			color.Yellow("Stopping monitor due to context cancellation")
+			m.logger.Warn("Stopping monitor due to context cancellation")
 			return
 		default:
 			if err := m.connectAndStream(ctx); err != nil {
-				color.Red("Stream error: %v. Reconnecting in 5 seconds...", err)
+				m.logger.Error("Stream error, reconnecting in 5 seconds",
+					zap.Error(err))
 				select {
 				case <-ctx.Done():
 					return
@@ -89,15 +93,15 @@ func (m *Monitor) connectAndStream(ctx context.Context) error {
 	// Use the existing GetWidgets method with subscribe=true
 	widgets, err := m.client.GetWidgets(true)
 	if err != nil {
-		return fmt.Errorf("❌ failed to connect to widget stream: %w", err)
+		return fmt.Errorf("failed to connect to widget stream: %w", err)
 	}
 
 	// Process initial widget state
 	for _, widget := range widgets {
 		if widgetJSON, err := json.Marshal(widget); err == nil {
 			if err := m.handleUpdate(string(widgetJSON)); err != nil {
-				color.Red("❌ Error handling initial widget: %v", err)
-				logHandler("❌ Error handling initial widget: %v", err)
+				m.logger.Error("Error handling initial widget",
+					zap.Error(err))
 			}
 		}
 	}
@@ -113,13 +117,18 @@ func (m *Monitor) handleUpdate(line string) error {
 
 	var updates []Update
 	if err := m.parseUpdates(line, &updates); err != nil {
-		logHandler("❌ Failed to parse updates: %v", err)
+		m.logger.Error("Failed to parse updates",
+			zap.Error(err))
 		return fmt.Errorf("failed to parse updates: %w", err)
 	}
 
 	for _, update := range updates {
 		if err := m.processUpdate(update); err != nil {
-			logHandler("❌ Error processing update %s: %v", update["id"].(string), err)
+			if id, ok := update["id"].(string); ok {
+				m.logger.Error("Error processing update",
+					zap.String("widget_id", id),
+					zap.Error(err))
+			}
 		}
 	}
 
