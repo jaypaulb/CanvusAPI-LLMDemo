@@ -283,3 +283,178 @@ jobs:
             lib/*.exe
           if-no-files-found: warn
           retention-days: 30
+
+  # =============================================================================
+  # Linux Build Job
+  # =============================================================================
+  build-linux:
+    name: Build Linux (CUDA)
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------------------------------------------------
+      # Setup
+      # -------------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.version }}" != "dev" ]]; then
+            version="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            version="${{ github.ref_name }}"
+            version="${version#v}"
+          else
+            version="0.0.0-dev"
+          fi
+          echo "VERSION=$version" >> $GITHUB_OUTPUT
+          echo "Building version: $version"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.18
+        id: cuda-toolkit
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: 'network'
+          linux-local-args: '["--toolkit"]'
+
+      - name: Verify CUDA installation
+        shell: bash
+        run: |
+          echo "CUDA_PATH: $CUDA_PATH"
+          nvcc --version
+          echo "CUDA Toolkit installed successfully"
+
+      # -------------------------------------------------------------------------
+      # Build llama.cpp with CUDA
+      # -------------------------------------------------------------------------
+      - name: Build llama.cpp (CUDA)
+        shell: bash
+        run: |
+          chmod +x scripts/build-llamacpp-cuda.sh
+          ./scripts/build-llamacpp-cuda.sh --jobs $(nproc)
+
+          # List built artifacts
+          echo "Built llama.cpp artifacts:"
+          find deps/llama.cpp/build -type f \( -name "*.so" -o -name "llama-server" -o -name "server" \) -exec ls -lh {} \;
+
+      # -------------------------------------------------------------------------
+      # Build stable-diffusion.cpp with CUDA
+      # -------------------------------------------------------------------------
+      - name: Build stable-diffusion.cpp (CUDA)
+        shell: bash
+        run: |
+          chmod +x scripts/build-sd-cuda.sh
+          ./scripts/build-sd-cuda.sh --jobs $(nproc)
+
+          # List built artifacts
+          echo "Built stable-diffusion.cpp artifacts:"
+          find deps/stable-diffusion.cpp/build -type f \( -name "*.so" -o -name "sd" \) -exec ls -lh {} \;
+
+      # -------------------------------------------------------------------------
+      # Build Go Application
+      # -------------------------------------------------------------------------
+      - name: Build Go application
+        shell: bash
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          version="${{ steps.version.outputs.VERSION }}"
+
+          # Build with version injection
+          go build -v \
+            -ldflags "-s -w -X main.Version=$version" \
+            -o canvuslocallm \
+            .
+
+          echo "Built: canvuslocallm"
+          ls -lh canvuslocallm
+
+      - name: Run Go tests
+        shell: bash
+        run: |
+          go test -v -race -timeout 300s ./...
+
+      # -------------------------------------------------------------------------
+      # Build Debian Package
+      # -------------------------------------------------------------------------
+      - name: Build .deb package
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.VERSION }}"
+
+          chmod +x scripts/build-deb.sh
+          ./scripts/build-deb.sh --version "$version" --output dist --skip-build
+
+          echo "Built .deb package:"
+          ls -lh dist/*.deb
+
+      # -------------------------------------------------------------------------
+      # Build Tarball
+      # -------------------------------------------------------------------------
+      - name: Build tarball
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.VERSION }}"
+
+          chmod +x scripts/build-tarball.sh
+          ./scripts/build-tarball.sh --version "$version" --output dist --skip-build
+
+          echo "Built tarball:"
+          ls -lh dist/*.tar.gz
+
+      # -------------------------------------------------------------------------
+      # Generate Checksums and Upload
+      # -------------------------------------------------------------------------
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+
+          # Generate SHA256 checksums for all artifacts
+          for file in *.deb *.tar.gz; do
+            if [[ -f "$file" ]]; then
+              sha256sum "$file" >> checksums-linux.txt
+              echo "Generated checksum for: $file"
+            fi
+          done
+
+          echo ""
+          echo "Checksums:"
+          cat checksums-linux.txt
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+            dist/checksums-linux.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Linux lib artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-libs
+          path: |
+            deps/llama.cpp/build/**/*.so
+            deps/llama.cpp/build/**/llama-server
+            deps/stable-diffusion.cpp/build/**/*.so
+            deps/stable-diffusion.cpp/build/**/sd
+          if-no-files-found: warn
+          retention-days: 30
