@@ -13,13 +13,17 @@ This process will create these files in `agent-os/product/` directory.
 
 Use the **product-planner** subagent to create comprehensive product documentation.
 
+**IMPORTANT**: Instruct the product-planner to use the **AskUserQuestion tool** for ALL user interactions. Do NOT present questions as plain text.
+
 IF the user has provided any details in regards to the product idea, its purpose, features list, target users and any other details then provide those to the **product-planner** subagent.
 
 The product-planner will:
-- Confirm (or gather) product idea, features, target users, confirm the tech stack and gather other details
+- Confirm (or gather) product idea, features, target users, confirm the tech stack and gather other details using **AskUserQuestion tool**
 - Create `agent-os/product/mission.md` with product vision and strategy
 - Create `agent-os/product/roadmap.md` with phased development plan
 - Create `agent-os/product/tech-stack.md` documenting all of this product's tech stack choices
+
+**Note on Updates**: When called by autonomous-plan with existing spec context, product-planner should update documents autonomously without asking user questions (context is already in the spec).
 
 ### PHASE 2: Inform the user
 

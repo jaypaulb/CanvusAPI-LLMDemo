@@ -44,7 +44,7 @@ Effort scale:
 
 #### Important Constraints
 
-- **Make roadmap actionable** - include effort estimates and dependencies
+- **Make roadmap actionable** - include effort estimates
 - **Priorities guided by mission** - When deciding on order, aim for the most direct path to achieving the mission as documented in mission.md
 - **Ensure phases are achievable** - start with MVP, build incrementally
 

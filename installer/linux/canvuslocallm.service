@@ -1,0 +1,50 @@
+[Unit]
+Description=CanvusLocalLLM - Canvus AI Integration Service
+Documentation=https://github.com/jaypaulb/CanvusLocalLLM
+After=network.target network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=canvusllm
+Group=canvusllm
+WorkingDirectory=/opt/canvuslocallm
+ExecStart=/opt/canvuslocallm/canvuslocallm
+EnvironmentFile=/opt/canvuslocallm/.env
+
+# Restart policies
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+# Allow write access to working directory for logs and downloads
+ReadWritePaths=/opt/canvuslocallm
+
+# Network access required
+PrivateNetwork=false
+
+# Capabilities
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# System call filtering
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

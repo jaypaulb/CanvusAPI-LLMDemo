@@ -151,7 +151,7 @@ Effort scale:
 
 #### Important Constraints
 
-- **Make roadmap actionable** - include effort estimates and dependencies
+- **Make roadmap actionable** - include effort estimates
 - **Priorities guided by mission** - When deciding on order, aim for the most direct path to achieving the mission as documented in mission.md
 - **Ensure phases are achievable** - start with MVP, build incrementally
 
@@ -186,7 +186,7 @@ Verify all files created successfully:
 
 ```bash
 # Validate all product files exist
-for file in mission.md roadmap.md; do
+for file in mission.md roadmap.md tech-stack.md; do
     if [ ! -f "agent-os/product/$file" ]; then
         echo "Error: Missing $file"
     else

@@ -58,3 +58,4 @@ canvusapi-*
 .cursor/rules.jsonl
 .cursor/
 go_backend
+.harness/

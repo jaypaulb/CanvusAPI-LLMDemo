@@ -1,17 +1,20 @@
-# Process for Orchestrating a Spec's Implementation
+# Process for Orchestrating Product Implementation
 
-Now that we have a spec and tasks list ready for implementation, we will proceed with orchestrating implementation of each task group by a dedicated agent using the following MULTI-PHASE process.
+Orchestrate implementation across ALL specs/phases in parallel from project root.
 
-Follow each of these phases and their individual workflows IN SEQUENCE:
+**Run this from PROJECT ROOT, not from a spec folder.**
 
 ## Multi-Phase Process
 
-### FIRST: Get task breakdown for this spec
+### FIRST: Verify Beads and Get All Phases
 
 
-### NEXT: Create orchestration.yml to serve as a roadmap for orchestration
+### NEXT: Analyze Parallel Execution Opportunities
 
-In this spec's folder, create this file: `agent-os/specs/[this-spec]/orchestration.yml`.
+Use BV to identify which work can run in parallel across ALL phases:
+
+
+### NEXT: Create Orchestration Plan
 
 
 ### NEXT: Assign atomic design agents to work
@@ -22,13 +25,4 @@ In this spec's folder, create this file: `agent-os/specs/[this-spec]/orchestrati
 
 
 
-### NEXT: Delegate task groups implementations to assigned subagents
-
-Loop through each task group in `agent-os/specs/[this-spec]/tasks.md` and delegate its implementation to the assigned subagent specified in `orchestration.yml`.
-
-For each delegation, provide the subagent with:
-- The task group (including the parent task and all sub-tasks)
-- The spec file: `agent-os/specs/[this-spec]/spec.md`
-- Instruct subagent to:
-  - Perform their implementation
-  - Check off the task and sub-task(s) in `agent-os/specs/[this-spec]/tasks.md`
+### NEXT: Delegate implementations to assigned subagents

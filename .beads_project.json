@@ -1,0 +1,10 @@
+{
+  "project_name": "CanvusLocalLLM",
+  "phase_count": 6,
+  "first_epic_id": "CanvusLocalLLM-6rw",
+  "initialized_at": "2025-12-16T10:00:00+00:00",
+  "tracking_mode": "beads",
+  "multi_phase": true,
+  "initialized": true,
+  "meta_issue_id": "CanvusLocalLLM-6rw"
+}
