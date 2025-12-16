@@ -13,6 +13,10 @@ This directory contains all test files for CanvusLocalLLM.
 - **`image_generation_test.go`**: End-to-end image generation integration tests
 - **`cicd_pipeline_integration_test.go`**: CI/CD pipeline integration tests
 - **`webui_server_integration_test.go`**: Web UI server integration tests
+- **`phase6_integration_test.go`**: Phase 6 production hardening tests
+  - Logging pipeline: JSON formatting and database recording
+  - Authentication flow: Complete login/logout cycle, rate limiting, concurrent sessions
+  - Shutdown sequence: Ordered cleanup, request draining, error recovery
 
 ### Performance Benchmarks
 
