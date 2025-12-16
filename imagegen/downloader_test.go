@@ -415,3 +415,99 @@ func TestDownload_ContextCancellation(t *testing.T) {
 		t.Error("expected nil result for cancelled context")
 	}
 }
+
+// TestDownloadBytes_NonOKStatus tests error handling for non-200 status codes.
+func TestDownloadBytes_NonOKStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	downloader, err := NewDownloaderWithConfig(DownloaderConfig{
+		DownloadsDir: tmpDir,
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, contentType, err := downloader.DownloadBytes(context.Background(), server.URL)
+
+	if err == nil {
+		t.Error("expected error for 500 status, got nil")
+	}
+	if data != nil {
+		t.Error("expected nil data for 500 status")
+	}
+	if contentType != "" {
+		t.Error("expected empty content type for error")
+	}
+}
+
+// TestDownloadBytes_ContextCancellation tests context cancellation for DownloadBytes.
+func TestDownloadBytes_ContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	downloader, err := NewDownloaderWithConfig(DownloaderConfig{
+		DownloadsDir: tmpDir,
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	data, _, err := downloader.DownloadBytes(ctx, server.URL)
+
+	if err == nil {
+		t.Error("expected error for cancelled context")
+	}
+	if data != nil {
+		t.Error("expected nil data for cancelled context")
+	}
+}
+
+// TestNewDownloaderWithConfig_WithCoreConfig tests creation with core.Config for HTTP client.
+func TestNewDownloaderWithConfig_WithCoreConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := DownloaderConfig{
+		DownloadsDir: tmpDir,
+	}
+	coreCfg := &core.Config{
+		AllowSelfSignedCerts: true,
+	}
+
+	downloader, err := NewDownloaderWithConfig(cfg, coreCfg)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if downloader == nil {
+		t.Fatal("expected non-nil downloader")
+	}
+}
+
+// TestNewDownloaderWithConfig_EmptyDir tests default directory behavior.
+func TestNewDownloaderWithConfig_EmptyDir(t *testing.T) {
+	cfg := DownloaderConfig{
+		DownloadsDir: "", // Should default to "downloads"
+	}
+
+	downloader, err := NewDownloaderWithConfig(cfg, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if downloader.DownloadsDir() != "downloads" {
+		t.Errorf("expected default 'downloads', got %s", downloader.DownloadsDir())
+	}
+
+	// Clean up
+	os.RemoveAll("downloads")
+}
