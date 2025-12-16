@@ -190,6 +190,25 @@ func StopService() error {
 	return nil
 }
 
+// RestartService stops and then starts the Windows service.
+func RestartService() error {
+	prg := &Program{}
+	svcConfig := ServiceConfig()
+
+	s, err := service.New(prg, svcConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create service: %w", err)
+	}
+
+	err = s.Restart()
+	if err != nil {
+		return fmt.Errorf("failed to restart service: %w", err)
+	}
+
+	fmt.Println("Service restarted successfully")
+	return nil
+}
+
 // ServiceStatus returns the current status of the Windows service.
 func ServiceStatus() (service.Status, error) {
 	prg := &Program{}
@@ -206,6 +225,33 @@ func ServiceStatus() (service.Status, error) {
 	}
 
 	return status, nil
+}
+
+// PrintServiceUsage prints the help/usage information for service commands.
+func PrintServiceUsage() {
+	fmt.Println("CanvusLocalLLM Service Management")
+	fmt.Println()
+	fmt.Println("Usage: CanvusLocalLLM.exe <command>")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  install    Install the application as a Windows service")
+	fmt.Println("  uninstall  Remove the Windows service (alias: remove)")
+	fmt.Println("  start      Start the Windows service")
+	fmt.Println("  stop       Stop the Windows service")
+	fmt.Println("  restart    Restart the Windows service (stop then start)")
+	fmt.Println("  status     Show the current service status")
+	fmt.Println("  help       Show this help message")
+	fmt.Println()
+	fmt.Println("Run without arguments to start the application in foreground mode.")
+}
+
+// ServiceMain is the entry point for service management commands.
+// It processes the command-line arguments and dispatches to the appropriate
+// service function. Returns true if a service command was handled, false otherwise.
+// This is the main entry point that should be called from main() before
+// starting the normal application.
+func ServiceMain(args []string) bool {
+	return HandleServiceCommand(args)
 }
 
 // HandleServiceCommand handles service-related command-line arguments.
@@ -225,6 +271,8 @@ func HandleServiceCommand(args []string) bool {
 		err = StartService()
 	case "stop":
 		err = StopService()
+	case "restart":
+		err = RestartService()
 	case "status":
 		status, statusErr := ServiceStatus()
 		if statusErr != nil {
@@ -239,6 +287,9 @@ func HandleServiceCommand(args []string) bool {
 		default:
 			fmt.Println("Service status unknown")
 		}
+		return true
+	case "help", "-h", "--help", "-help":
+		PrintServiceUsage()
 		return true
 	default:
 		return false
