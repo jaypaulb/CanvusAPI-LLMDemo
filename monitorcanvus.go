@@ -12,6 +12,7 @@ import (
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/imagegen"
 	"go_backend/logging"
 
 	"go.uber.org/zap"
@@ -19,12 +20,14 @@ import (
 
 // Monitor represents the canvas monitoring service
 type Monitor struct {
-	client     *canvusapi.Client
-	config     *core.Config
-	logger     *logging.Logger
-	done       chan struct{}
-	widgets    map[string]map[string]interface{}
-	widgetsMux sync.RWMutex
+	client           *canvusapi.Client
+	config           *core.Config
+	logger           *logging.Logger
+	done             chan struct{}
+	widgets          map[string]map[string]interface{}
+	widgetsMux       sync.RWMutex
+	imagegenProc     *imagegen.Processor
+	imagegenProcMux  sync.RWMutex
 }
 
 // WidgetState tracks widget information
@@ -57,6 +60,23 @@ func NewMonitor(client *canvusapi.Client, cfg *core.Config, logger *logging.Logg
 		widgets:    make(map[string]map[string]interface{}),
 		widgetsMux: sync.RWMutex{},
 	}
+}
+
+// SetImagegenProcessor sets the image generation processor for handling {{image:}} prompts.
+// This should be called after the SD runtime is initialized. If not set, image prompts
+// will fall back to the existing AI classification flow in handleNote.
+func (m *Monitor) SetImagegenProcessor(proc *imagegen.Processor) {
+	m.imagegenProcMux.Lock()
+	defer m.imagegenProcMux.Unlock()
+	m.imagegenProc = proc
+	m.logger.Info("imagegen processor set for direct image prompt handling")
+}
+
+// getImagegenProcessor returns the imagegen processor if available.
+func (m *Monitor) getImagegenProcessor() *imagegen.Processor {
+	m.imagegenProcMux.RLock()
+	defer m.imagegenProcMux.RUnlock()
+	return m.imagegenProc
 }
 
 // Done returns a channel that's closed when monitoring is complete
@@ -272,6 +292,12 @@ func (m *Monitor) saveSharedCanvasData(data Update) error {
 func (m *Monitor) routeUpdate(update Update) error {
 	switch update["widget_type"].(string) {
 	case "Note":
+		// Check for direct image prompt {{image:...}}
+		if prompt, ok := m.parseImagePrompt(update); ok {
+			go m.handleImagePrompt(update, prompt)
+			return nil
+		}
+		// Fall back to existing text/image classification flow
 		go handleNote(update, m.client, m.config, m.logger)
 	case "Image":
 		if title, ok := update["title"].(string); ok {
@@ -283,4 +309,182 @@ func (m *Monitor) routeUpdate(update Update) error {
 		}
 	}
 	return nil
+}
+
+// parseImagePrompt checks if the note text contains a direct image prompt.
+// Returns the extracted prompt and true if found, empty string and false otherwise.
+//
+// Supported formats:
+//   - {{image: prompt text here}}
+//   - {{image:prompt text here}}
+//   - {{ image: prompt text here }}
+//   - {{IMAGE: prompt text here}} (case-insensitive prefix)
+func (m *Monitor) parseImagePrompt(update Update) (string, bool) {
+	text, ok := update["text"].(string)
+	if !ok || text == "" {
+		return "", false
+	}
+
+	// Find the start of the trigger
+	startIdx := strings.Index(text, "{{")
+	if startIdx == -1 {
+		return "", false
+	}
+
+	// Find the end of the trigger
+	endIdx := strings.Index(text[startIdx:], "}}")
+	if endIdx == -1 {
+		return "", false
+	}
+	endIdx += startIdx // Adjust to absolute position
+
+	// Extract content between {{ and }}
+	content := text[startIdx+2 : endIdx]
+	content = strings.TrimSpace(content)
+
+	// Check if it starts with "image:" (case-insensitive)
+	lower := strings.ToLower(content)
+	if !strings.HasPrefix(lower, "image:") {
+		return "", false
+	}
+
+	// Extract the prompt after "image:"
+	prompt := strings.TrimSpace(content[6:]) // len("image:") == 6
+	if prompt == "" {
+		return "", false
+	}
+
+	return prompt, true
+}
+
+// handleImagePrompt processes a direct image generation prompt via imagegen.
+// If no imagegen processor is available, it falls back to the standard handleNote flow.
+func (m *Monitor) handleImagePrompt(update Update, prompt string) {
+	noteID, _ := update["id"].(string)
+	log := m.logger.With(
+		zap.String("widget_id", noteID),
+		zap.String("prompt_preview", truncatePrompt(prompt, 50)),
+	)
+
+	log.Info("detected direct image prompt")
+
+	// Check if imagegen processor is available
+	proc := m.getImagegenProcessor()
+	if proc == nil {
+		log.Debug("imagegen processor not available, falling back to handleNote")
+		handleNote(update, m.client, m.config, m.logger)
+		return
+	}
+
+	// Create parent widget from update
+	parentWidget, err := m.createParentWidget(update)
+	if err != nil {
+		log.Error("failed to create parent widget for image generation", zap.Error(err))
+		// Fall back to handleNote which has error handling
+		handleNote(update, m.client, m.config, m.logger)
+		return
+	}
+
+	// Update the note to show processing
+	originalText, _ := update["text"].(string)
+	baseText := strings.ReplaceAll(strings.ReplaceAll(originalText, "{{", ""), "}}", "")
+	baseText = strings.TrimSpace(baseText)
+	// Remove "image:" prefix for display
+	if strings.HasPrefix(strings.ToLower(baseText), "image:") {
+		baseText = strings.TrimSpace(baseText[6:])
+	}
+
+	_, err = m.client.UpdateNote(noteID, map[string]interface{}{
+		"text": baseText + "\n\n[SD] Generating image...\nThis may take 10-30 seconds.",
+	})
+	if err != nil {
+		log.Warn("failed to update note with processing status", zap.Error(err))
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), m.config.AITimeout)
+	defer cancel()
+
+	// Process the image prompt
+	result, err := proc.ProcessImagePrompt(ctx, prompt, parentWidget)
+	if err != nil {
+		log.Error("image generation failed", zap.Error(err))
+		// Update note with error
+		_, _ = m.client.UpdateNote(noteID, map[string]interface{}{
+			"text": baseText + "\n\n[SD] Image generation failed: " + err.Error(),
+		})
+		return
+	}
+
+	// Clear processing status from note
+	_, err = m.client.UpdateNote(noteID, map[string]interface{}{
+		"text": baseText,
+	})
+	if err != nil {
+		log.Warn("failed to clear processing status from note", zap.Error(err))
+	}
+
+	log.Info("image generation completed successfully",
+		zap.String("widget_id", result.WidgetID))
+}
+
+// createParentWidget creates an imagegen.ParentWidget from an Update.
+func (m *Monitor) createParentWidget(update Update) (imagegen.ParentWidget, error) {
+	id, ok := update["id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("update missing id field")
+	}
+
+	// Extract location
+	locMap, ok := update["location"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("update missing location field")
+	}
+	x, _ := locMap["x"].(float64)
+	y, _ := locMap["y"].(float64)
+
+	// Extract size
+	sizeMap, ok := update["size"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("update missing size field")
+	}
+	width, _ := sizeMap["width"].(float64)
+	height, _ := sizeMap["height"].(float64)
+
+	// Extract scale (default to 1.0 if not present)
+	scale, ok := update["scale"].(float64)
+	if !ok {
+		scale = 1.0
+	}
+
+	// Extract depth (default to 0 if not present)
+	depth, ok := update["depth"].(float64)
+	if !ok {
+		depth = 0.0
+	}
+
+	return imagegen.CanvasWidget{
+		ID: id,
+		Location: imagegen.WidgetLocation{
+			X: x,
+			Y: y,
+		},
+		Size: imagegen.WidgetSize{
+			Width:  width,
+			Height: height,
+		},
+		Scale: scale,
+		Depth: depth,
+	}, nil
+}
+
+// truncatePrompt truncates a prompt string for logging purposes.
+func truncatePrompt(text string, maxLen int) string {
+	if len(text) <= maxLen {
+		return text
+	}
+	if maxLen <= 3 {
+		return text[:maxLen]
+	}
+	return text[:maxLen-3] + "..."
 }
