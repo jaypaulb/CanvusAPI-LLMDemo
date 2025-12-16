@@ -59,3 +59,10 @@ canvusapi-*
 .cursor/
 go_backend
 .harness/
+
+# AI Model files (large binaries - download via scripts)
+models/*.safetensors
+models/*.gguf
+models/*.bin
+models/*.ckpt
+!models/.gitkeep
