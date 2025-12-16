@@ -45,10 +45,6 @@ type AINoteResponse struct {
 	Type    string `json:"type"`
 	Content string `json:"content"`
 }
-
-// Configuration with defaults
-var config *core.Config
-
 // Shared resources and synchronization
 var (
 	logMutex       sync.Mutex
@@ -1642,23 +1638,6 @@ func splitIntoChunks(text string, maxChunkSize int) []string {
 	return chunks
 }
 
-func consolidateSummaries(ctx context.Context, summaries []string, log *logging.Logger) (string, error) {
-	// Create a PDF-specific config that uses the PDF model
-	pdfConfig := *config                                 // Create a copy of the config
-	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel // Use PDF model for all AI calls
-
-	systemMessage := `You are tasked with combining multiple document summaries into a coherent final summary.
-	Maintain key points and relationships between sections while eliminating redundancy.
-	Structure the output with clear sections:
-	# Overview
-	# Key Points
-	# Details
-	# Conclusions`
-
-	combinedSummaries := strings.Join(summaries, "\n---\n")
-	return generateAIResponse(combinedSummaries, &pdfConfig, systemMessage, log)
-}
-
 // estimateTokenCount provides a rough estimate of tokens in a text
 // Using average of 4 characters per token as a rough approximation
 func estimateTokenCount(text string) int {
@@ -1957,32 +1936,6 @@ func deleteTriggeringWidget(client *canvusapi.Client, widgetType, widgetID strin
 	return nil
 }
 
-// Cleanup performs all necessary cleanup operations for the handlers package
-func Cleanup(log *logging.Logger) {
-	// Clean up downloads directory
-	if err := CleanupDownloads(log); err != nil {
-		log.Error("error cleaning up downloads", zap.Error(err))
-	}
-}
-
-// CleanupDownloads removes temporary files from downloads directory
-func CleanupDownloads(log *logging.Logger) error {
-	pattern := filepath.Join(config.DownloadsDir, "temp_*")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return fmt.Errorf("failed to list temporary files: %w", err)
-	}
-
-	for _, match := range matches {
-		if err := os.Remove(match); err != nil {
-			log.Warn("failed to remove temporary file",
-				zap.String("file", match),
-				zap.Error(err))
-		}
-	}
-	return nil
-}
-
 // handleAIError creates a friendly error note, clears processing text, and logs the error
 func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string, config *core.Config, log *logging.Logger) error {
 	log.Error("AI processing error", zap.Error(err))
@@ -2068,37 +2021,7 @@ func createProcessingNote(client *canvusapi.Client, update Update, config *core.
 	return noteResp["id"].(string), nil
 }
 
-// Helper function for cleanup (reduces duplication)
-func cleanup(client *canvusapi.Client, processingNoteID, imageID, downloadPath string, log *logging.Logger) {
-	// Only try to delete the processing note if we have an ID
-	if processingNoteID != "" {
-		if err := client.DeleteNote(processingNoteID); err != nil {
-			log.Warn("failed to delete processing note", zap.Error(err))
-			// Try to update the note instead of deleting if delete fails
-			updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-				"text": " Process completed with errors.\nYou can delete this note.",
-			}, config, log)
-		}
-	}
-
-	// Only try to delete the image if we have an ID
-	if imageID != "" {
-		if err := client.DeleteImage(imageID); err != nil {
-			log.Warn("failed to delete snapshot image", zap.Error(err))
-		}
-	}
-
-	// Only try to delete the download file if path is provided
-	if downloadPath != "" {
-		if err := os.Remove(downloadPath); err != nil {
-			if !os.IsNotExist(err) { // Only log if error is not "file doesn't exist"
-				log.Warn("failed to remove local snapshot file", zap.Error(err))
-			}
-		}
-	}
-}
-
-// Add performGoogleVisionOCR function
+// performGoogleVisionOCR performs OCR using Google Vision API
 func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.Config, log *logging.Logger) (string, error) {
 	log.Info("starting Google Vision OCR process")
 
@@ -2219,156 +2142,6 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 	return extractedText, nil
 }
 
-// First, let's add better logging for the Google Vision API authentication
-func processImage(ctx context.Context, client *canvusapi.Client, imageID string, processingNoteID string, log *logging.Logger) error {
-	log.Info("starting OCR process for image",
-		zap.String("image_id", imageID))
-
-	// Download the snapshot using the standard client method
-	downloadPath := filepath.Join(
-		config.DownloadsDir,
-		fmt.Sprintf("temp_snapshot_%s.jpg", imageID),
-	)
-
-	if err := client.DownloadImage(imageID, downloadPath); err != nil {
-		log.Error("failed to download image", zap.Error(err))
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer os.Remove(downloadPath) // Clean up file after function returns
-
-	// Verify Google Vision API key
-	if len(config.GoogleVisionKey) < 30 {
-		log.Error("invalid Google Vision API key length",
-			zap.Int("length", len(config.GoogleVisionKey)))
-		return fmt.Errorf("invalid Google Vision API key")
-	}
-
-	// Perform OCR
-	ocrResult, err := performOCR(downloadPath, config.GoogleVisionKey, config, log)
-	if err != nil {
-		log.Error("OCR failed", zap.Error(err))
-		// Don't delete widgets on failure, just return the error
-		return fmt.Errorf("OCR failed: %w", err)
-	}
-
-	// Create response note with OCR results using standard client method
-	notePayload := map[string]interface{}{
-		"text": ocrResult,
-		"location": map[string]interface{}{
-			"x": originalNoteX,
-			"y": originalNoteY,
-		},
-		"size": map[string]interface{}{
-			"width":  400,
-			"height": 300,
-		},
-		"depth": 0,
-		"scale": 1.0,
-	}
-
-	_, err = client.CreateNote(notePayload)
-	if err != nil {
-		log.Error("failed to create response note", zap.Error(err))
-		return fmt.Errorf("failed to create response note: %w", err)
-	}
-
-	// Only delete original widgets after successful OCR and response creation
-	if err := client.DeleteNote(processingNoteID); err != nil {
-		log.Warn("failed to delete processing note", zap.Error(err))
-		// Continue anyway as this is not critical
-	}
-
-	if err := client.DeleteImage(imageID); err != nil {
-		log.Warn("failed to delete original image", zap.Error(err))
-		// Continue anyway as this is not critical
-	}
-
-	log.Info("successfully processed image and created response note",
-		zap.String("image_id", imageID))
-	return nil
-}
-
-// Improve the OCR function with better error handling
-func performOCR(imagePath string, apiKey string, config *core.Config, log *logging.Logger) (string, error) {
-	log.Info("starting Google Vision OCR",
-		zap.String("image", filepath.Base(imagePath)))
-
-	// Read image file
-	imageBytes, err := os.ReadFile(imagePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read image file: %w", err)
-	}
-
-	// Create Vision API request
-	requestBody := map[string]interface{}{
-		"requests": []map[string]interface{}{
-			{
-				"image": map[string]interface{}{
-					"content": base64.StdEncoding.EncodeToString(imageBytes),
-				},
-				"features": []map[string]interface{}{
-					{
-						"type": "TEXT_DETECTION",
-					},
-				},
-			},
-		},
-	}
-
-	// Create HTTP request
-	requestURL := fmt.Sprintf("https://vision.googleapis.com/v1/images:annotate?key=%s", apiKey)
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return "", fmt.Errorf("failed to create request JSON: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", requestURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("failed to create HTTP request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Make request with detailed error handling
-	httpClient := core.GetHTTPClient(config, 30*time.Second)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Error("Google Vision API error response",
-			zap.Int("status_code", resp.StatusCode),
-			zap.String("body", string(body)))
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Parse response
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("failed to parse API response: %w", err)
-	}
-
-	// Extract text from response
-	responses, ok := result["responses"].([]interface{})
-	if !ok || len(responses) == 0 {
-		return "", fmt.Errorf("invalid API response format")
-	}
-
-	firstResponse := responses[0].(map[string]interface{})
-	textAnnotations, ok := firstResponse["textAnnotations"].([]interface{})
-	if !ok || len(textAnnotations) == 0 {
-		return "", fmt.Errorf("no text found in image")
-	}
-
-	text := textAnnotations[0].(map[string]interface{})["description"].(string)
-	log.Info("successfully extracted text from image",
-		zap.Int("text_length", len(text)))
-	return text, nil
-}
-
 // validateGoogleAPIKey makes a minimal API call to verify the key works
 func validateGoogleAPIKey(ctx context.Context, apiKey string, config *core.Config, log *logging.Logger) error {
 	// Create minimal request with a 1x1 pixel transparent PNG
@@ -2430,6 +2203,3 @@ func validateGoogleAPIKey(ctx context.Context, apiKey string, config *core.Confi
 	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("API key validation failed: status=%d, body=%s", resp.StatusCode, string(body))
 }
-
-// Define originalNoteX and originalNoteY
-var originalNoteX, originalNoteY float64
