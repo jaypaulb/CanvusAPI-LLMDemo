@@ -272,11 +272,11 @@ func (m *Monitor) saveSharedCanvasData(data Update) error {
 func (m *Monitor) routeUpdate(update Update) error {
 	switch update["widget_type"].(string) {
 	case "Note":
-		go handleNote(update, m.client, m.config)
+		go handleNote(update, m.client, m.config, m.logger)
 	case "Image":
 		if title, ok := update["title"].(string); ok {
 			if strings.HasPrefix(title, "Snapshot at") {
-				go handleSnapshot(update, m.client, m.config)
+				go handleSnapshot(update, m.client, m.config, m.logger)
 			} else if strings.HasPrefix(title, "AI_Icon_") {
 				return m.handleAIIcon(update)
 			}

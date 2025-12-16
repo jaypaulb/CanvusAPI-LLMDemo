@@ -22,9 +22,10 @@ import (
 	"bytes"
 	"encoding/base64"
 
-	"github.com/fatih/color"
+	"github.com/google/uuid"
 	"github.com/ledongthuc/pdf"
 	"github.com/sashabaranov/go-openai"
+	"go.uber.org/zap"
 )
 
 // Add constants at the top
@@ -86,9 +87,9 @@ type GoogleVisionResponse struct {
 	} `json:"responses"`
 }
 
-// logHandler logs messages to both console and file with optional emoji
-func logHandler(format string, v ...interface{}) {
-	logging.LogHandler(format, v...)
+// generateCorrelationID creates a unique ID for request tracing
+func generateCorrelationID() string {
+	return uuid.New().String()[:8]
 }
 
 // truncateText truncates a text to a specified length
@@ -100,9 +101,19 @@ func truncateText(text string, length int) string {
 }
 
 // handleNote processes Note widget updates
-func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
+func handleNote(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+	correlationID := generateCorrelationID()
+	noteID, _ := update["id"].(string)
+
+	// Create a logger with widget context
+	log := logger.With(
+		zap.String("correlation_id", correlationID),
+		zap.String("widget_id", noteID),
+		zap.String("widget_type", "Note"),
+	)
+
 	if err := validateUpdate(update); err != nil {
-		logHandler("❌ Invalid update: %v", err)
+		log.Error("invalid update", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
@@ -118,8 +129,9 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 		return
 	}
 
-	noteID := update["id"].(string)
 	start := time.Now()
+	log.Info("processing AI trigger",
+		zap.String("text_preview", truncateText(noteText, 30)))
 
 	// Immediately mark as processing - highest priority
 	processingText := strings.ReplaceAll(
@@ -129,17 +141,13 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 	baseText := processingText // Store original text without status
 
 	err := updateNoteWithRetry(client, noteID, map[string]interface{}{
-		"text": baseText + "\n\n⚙️ Starting AI Processing...",
-	}, config)
+		"text": baseText + "\n\n processing...",
+	}, config, log)
 	if err != nil {
-		logHandler("❌ Failed to mark Note as processing: ID=%s, Error=%v", noteID, err)
+		log.Error("failed to mark note as processing", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
-
-	// Log the start of processing
-	textPreview := truncateText(noteText, 30)
-	logHandler("🤖 Processing AI trigger in Note: ID=%s, Text=\"%s\"", noteID, textPreview)
 
 	// Create context with timeout for AI processing
 	ctx, cancel := context.WithTimeout(context.Background(), config.AITimeout)
@@ -147,8 +155,8 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 
 	// Update note to show we're analyzing the request
 	updateNoteWithRetry(client, noteID, map[string]interface{}{
-		"text": baseText + "\n\n🔍 Analyzing request...",
-	}, config)
+		"text": baseText + "\n\n Analyzing request...",
+	}, config, log)
 
 	// Generate the AI response
 	systemMessage := "You are an assistant capable of interpreting structured text triggers from a Note widget. " +
@@ -161,24 +169,37 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 		"Do not include any additional text or explanations."
 
 	aiPrompt := strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
-	logHandler("🤖 Prompt: \"%.50s...\"", aiPrompt)
+	log.Debug("sending prompt to AI",
+		zap.String("prompt_preview", truncateText(aiPrompt, 50)))
 
-	rawResponse, err := generateAIResponse(aiPrompt, config, systemMessage)
+	// Create metrics logger for inference tracking
+	metricsLogger := logging.NewMetricsLogger(log)
+	inferenceTimer := metricsLogger.StartInference(config.OpenAINoteModel)
+
+	rawResponse, err := generateAIResponse(aiPrompt, config, systemMessage, log)
 	if err != nil {
-		if err := handleAIError(ctx, client, update, err, baseText, config); err != nil {
-			logHandler("❌ Failed to create error note: %v", err)
+		// End inference with error (0 tokens)
+		metricsLogger.EndInference(inferenceTimer, 0, 0)
+		if err := handleAIError(ctx, client, update, err, baseText, config, log); err != nil {
+			log.Error("failed to create error note", zap.Error(err))
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
 
-	logHandler("✨ Response: \"%.50s...\"", rawResponse)
+	// Estimate tokens for logging (rough approximation)
+	promptTokens := len(aiPrompt) / 4
+	completionTokens := len(rawResponse) / 4
+	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
+
+	log.Debug("received AI response",
+		zap.String("response_preview", truncateText(rawResponse, 50)))
 
 	// Parse the AI response
 	var aiNoteResponse AINoteResponse
 	if err := json.Unmarshal([]byte(rawResponse), &aiNoteResponse); err != nil {
-		if err := handleAIError(ctx, client, update, err, baseText, config); err != nil {
-			logHandler("❌ Failed to create error note: %v", err)
+		if err := handleAIError(ctx, client, update, err, baseText, config, log); err != nil {
+			log.Error("failed to create error note", zap.Error(err))
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
@@ -189,40 +210,41 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 	switch aiNoteResponse.Type {
 	case "text":
 		updateNoteWithRetry(client, noteID, map[string]interface{}{
-			"text": baseText + "\n\n📝 Generating text response...",
-		}, config)
-		logHandler("📝 Creating text response for Note: ID=%s", noteID)
+			"text": baseText + "\n\n Generating text response...",
+		}, config, log)
+		log.Info("creating text response")
 		// Convert escaped newlines to actual newlines
 		content := strings.ReplaceAll(aiNoteResponse.Content, "\\n", "\n")
-		creationErr = createNoteFromResponse(content, noteID, update, false, client, config)
+		creationErr = createNoteFromResponse(content, noteID, update, false, client, config, log)
 
 	case "image":
 		// For image generation, provide more detailed progress updates
 		updateNoteWithRetry(client, noteID, map[string]interface{}{
-			"text": baseText + "\n\n🎨 Generating image...\nThis may take up to 30 seconds.",
-		}, config)
-		logHandler("🎨 Creating image response for Note: ID=%s", noteID)
+			"text": baseText + "\n\n Generating image...\nThis may take up to 30 seconds.",
+		}, config, log)
+		log.Info("creating image response")
 
-		creationErr = processAIImage(ctx, client, aiNoteResponse.Content, update, config)
+		creationErr = processAIImage(ctx, client, aiNoteResponse.Content, update, config, log)
 
 	default:
-		logHandler("❌ Unexpected AI response type for Note: ID=%s, Type=%s", noteID, aiNoteResponse.Type)
+		log.Error("unexpected AI response type",
+			zap.String("response_type", aiNoteResponse.Type))
 		creationErr = fmt.Errorf("unexpected response type: %s", aiNoteResponse.Type)
 	}
 
 	if creationErr != nil {
-		logHandler("❌ Failed to create response widget for Note: ID=%s, Error=%v", noteID, creationErr)
+		log.Error("failed to create response widget", zap.Error(creationErr))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		// Create a new note with the error details
-		errorContent := fmt.Sprintf("# AI Image Generation Error\n\n❌ Failed to generate image for your request.\n\n**Error Details:** %v", creationErr)
-		createNoteFromResponse(errorContent, noteID, update, true, client, config)
+		errorContent := fmt.Sprintf("# AI Image Generation Error\n\n Failed to generate image for your request.\n\n**Error Details:** %v", creationErr)
+		createNoteFromResponse(errorContent, noteID, update, true, client, config, log)
 		// Clear the processing status from the original note
-		clearProcessingStatus(client, noteID, baseText, config)
+		clearProcessingStatus(client, noteID, baseText, config, log)
 		return
 	}
 
 	// Clear the processing status
-	clearProcessingStatus(client, noteID, baseText, config)
+	clearProcessingStatus(client, noteID, baseText, config, log)
 
 	// Update metrics
 	atomic.AddInt64(&handlerMetrics.processedNotes, 1)
@@ -230,7 +252,8 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config) {
 	handlerMetrics.processingDuration += time.Since(start)
 	metricsMutex.Unlock()
 
-	logHandler("✅ Completed processing Note: ID=%s (took %v)", noteID, time.Since(start))
+	log.Info("completed processing note",
+		zap.Duration("duration", time.Since(start)))
 }
 
 // validateUpdate checks if an update contains required fields
@@ -253,25 +276,30 @@ func validateUpdate(update Update) error {
 }
 
 // updateNoteWithRetry attempts to update a note with retries
-func updateNoteWithRetry(client *canvusapi.Client, noteID string, payload map[string]interface{}, config *core.Config) error {
+func updateNoteWithRetry(client *canvusapi.Client, noteID string, payload map[string]interface{}, config *core.Config, log *logging.Logger) error {
 	for attempt := 1; attempt <= config.MaxRetries; attempt++ {
-		// Log the attempt and payload details
-		logHandler("Attempting note update - ID=%s, Attempt=%d/%d, Payload=%+v",
-			noteID, attempt, config.MaxRetries, payload)
+		log.Debug("attempting note update",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", config.MaxRetries))
 
 		_, err := client.UpdateNote(noteID, payload)
 		if err == nil {
-			logHandler("Note updated successfully: ID=%s on attempt %d", noteID, attempt)
+			log.Debug("note updated successfully", zap.Int("attempt", attempt))
 			return nil
 		}
 
 		// Enhanced error logging
 		if apiErr, ok := err.(*canvusapi.APIError); ok {
-			logHandler("Retry %d/%d failed to update Note: ID=%s, StatusCode=%d, Error=%v",
-				attempt, config.MaxRetries, noteID, apiErr.StatusCode, apiErr.Message)
+			log.Warn("retry failed to update note",
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", config.MaxRetries),
+				zap.Int("status_code", apiErr.StatusCode),
+				zap.String("error_message", apiErr.Message))
 		} else {
-			logHandler("Retry %d/%d failed to update Note: ID=%s, Error=%v",
-				attempt, config.MaxRetries, noteID, err)
+			log.Warn("retry failed to update note",
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", config.MaxRetries),
+				zap.Error(err))
 		}
 
 		time.Sleep(config.RetryDelay)
@@ -280,7 +308,7 @@ func updateNoteWithRetry(client *canvusapi.Client, noteID string, payload map[st
 }
 
 // generateAIResponse generates an AI response using OpenAI
-func generateAIResponse(prompt string, config *core.Config, systemMessage string) (string, error) {
+func generateAIResponse(prompt string, config *core.Config, systemMessage string, log *logging.Logger) (string, error) {
 	// Create client with configuration
 	clientConfig := openai.DefaultConfig(config.OpenAIAPIKey)
 
@@ -306,6 +334,10 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 		"For text: {\"type\": \"text\", \"content\": \"your response\"}\n" +
 		"For image: {\"type\": \"image\", \"content\": \"your prompt\"}"
 
+	log.Debug("making AI completion request",
+		zap.String("model", config.OpenAINoteModel),
+		zap.Int("max_tokens", int(config.NoteResponseTokens)))
+
 	resp, err := client.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
@@ -326,10 +358,12 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 	)
 
 	if err != nil {
+		log.Error("AI completion request failed", zap.Error(err))
 		return "", fmt.Errorf("error generating AI response: %w", err)
 	}
 
 	if len(resp.Choices) == 0 {
+		log.Error("no response choices returned from AI")
 		return "", fmt.Errorf("no response choices returned from AI")
 	}
 
@@ -341,6 +375,8 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 	endIdx := strings.LastIndex(rawResponse, "}")
 
 	if startIdx == -1 || endIdx == -1 || startIdx > endIdx {
+		log.Error("response does not contain valid JSON",
+			zap.String("raw_response", truncateText(rawResponse, 100)))
 		return "", fmt.Errorf("response does not contain valid JSON: %s", rawResponse)
 	}
 
@@ -350,14 +386,17 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 	// Validate it's parseable JSON
 	var testParse map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
+		log.Error("invalid JSON in response", zap.Error(err))
 		return "", fmt.Errorf("invalid JSON in response: %w", err)
 	}
 
 	// Validate it has the required fields
 	if _, ok := testParse["type"].(string); !ok {
+		log.Error("response missing 'type' field")
 		return "", fmt.Errorf("response missing 'type' field")
 	}
 	if _, ok := testParse["content"].(string); !ok {
+		log.Error("response missing 'content' field")
 		return "", fmt.Errorf("response missing 'content' field")
 	}
 
@@ -365,20 +404,20 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 }
 
 // clearProcessingStatus removes processing indicator from note
-func clearProcessingStatus(client *canvusapi.Client, noteID, processingText string, config *core.Config) {
+func clearProcessingStatus(client *canvusapi.Client, noteID, processingText string, config *core.Config, log *logging.Logger) {
 	clearedText := strings.ReplaceAll(processingText, "\n !! AI Processing !!", "")
 
 	// First get the widget to determine its type
 	widget, err := client.GetWidget(noteID, false)
 	if err != nil {
-		logHandler("Failed to get widget info: ID=%s, Error=%v", noteID, err)
+		log.Warn("failed to get widget info", zap.Error(err))
 		return
 	}
 
 	// Check widget type and use appropriate update method
 	widgetType, ok := widget["widget_type"].(string)
 	if !ok {
-		logHandler("Failed to determine widget type: ID=%s", noteID)
+		log.Warn("failed to determine widget type")
 		return
 	}
 
@@ -397,12 +436,12 @@ func clearProcessingStatus(client *canvusapi.Client, noteID, processingText stri
 	}
 
 	if updateErr != nil {
-		logHandler("Failed to clear processing status: ID=%s, Error=%v", noteID, updateErr)
+		log.Warn("failed to clear processing status", zap.Error(updateErr))
 	}
 }
 
 // Helper function to get absolute location
-func getAbsoluteLocation(client *canvusapi.Client, widget Update, config *core.Config) (map[string]float64, error) {
+func getAbsoluteLocation(client *canvusapi.Client, widget Update, config *core.Config, log *logging.Logger) (map[string]float64, error) {
 	parentID, ok := widget["parent_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("no parent_id found")
@@ -427,7 +466,7 @@ func getAbsoluteLocation(client *canvusapi.Client, widget Update, config *core.C
 	parentLoc, ok := parent["location"].(map[string]interface{})
 	if !ok {
 		// If parent has no location (shouldn't happen), use 0,0
-		logHandler("Warning: Parent widget %s has no location", parentID)
+		log.Warn("parent widget has no location", zap.String("parent_id", parentID))
 		parentLoc = map[string]interface{}{
 			"x": float64(0),
 			"y": float64(0),
@@ -444,22 +483,23 @@ func getAbsoluteLocation(client *canvusapi.Client, widget Update, config *core.C
 	}
 
 	// Log the calculation for debugging
-	logHandler("Location calculation: Parent(%.2f,%.2f) + Relative(%.2f,%.2f) = Absolute(%.2f,%.2f)",
-		parentLoc["x"].(float64), parentLoc["y"].(float64),
-		widgetLoc["x"].(float64), widgetLoc["y"].(float64),
-		absoluteLoc["x"], absoluteLoc["y"])
+	log.Debug("location calculation",
+		zap.Float64("parent_x", parentLoc["x"].(float64)),
+		zap.Float64("parent_y", parentLoc["y"].(float64)),
+		zap.Float64("relative_x", widgetLoc["x"].(float64)),
+		zap.Float64("relative_y", widgetLoc["y"].(float64)),
+		zap.Float64("absolute_x", absoluteLoc["x"]),
+		zap.Float64("absolute_y", absoluteLoc["y"]))
 
 	return absoluteLoc, nil
 }
 
 // createNoteFromResponse creates a new Note widget based on the AI response.
-func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate Update, errorNote bool, client *canvusapi.Client, config *core.Config) error {
+func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate Update, errorNote bool, client *canvusapi.Client, config *core.Config, log *logging.Logger) error {
 	// Log content preview
-	contentPreview := content
-	if len(content) > 30 {
-		contentPreview = content[:30]
-	}
-	logHandler("createNoteFromResponse called with content: %.30s", contentPreview)
+	log.Debug("creating note from response",
+		zap.String("content_preview", truncateText(content, 30)),
+		zap.Bool("is_error_note", errorNote))
 
 	// Get original properties
 	originalSize := triggeringUpdate["size"].(map[string]interface{})
@@ -477,7 +517,7 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 		}
 		scale = originalScale
 	} else {
-		// Calculate content length in tokens (rough approximation: 1 token ≈ 4 characters)
+		// Calculate content length in tokens (rough approximation: 1 token = 4 characters)
 		contentTokens := float64(len(content)) / 4.0
 
 		// For short content (< 150 tokens), use original size and scale
@@ -488,7 +528,8 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 			}
 			scale = originalScale
 
-			logHandler("Short content (%f tokens): using original size and scale", contentTokens)
+			log.Debug("short content using original size",
+				zap.Float64("content_tokens", contentTokens))
 		} else {
 			// Calculate content requirements
 			contentLines := float64(strings.Count(content, "\n") + 1)
@@ -542,8 +583,14 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 				"height": height,
 			}
 
-			logHandler("Content sizing: content_lines=%f, avg_line_len=%f, max_chars=%f, formatted=%v, width=%f, height=%f, scale=%f",
-				contentLines, averageLineLength, maxLineLength, isFormattedText, width, height, scale)
+			log.Debug("content sizing calculated",
+				zap.Float64("content_lines", contentLines),
+				zap.Float64("avg_line_len", averageLineLength),
+				zap.Float64("max_chars", maxLineLength),
+				zap.Bool("formatted", isFormattedText),
+				zap.Float64("width", width),
+				zap.Float64("height", height),
+				zap.Float64("scale", scale))
 		}
 	}
 
@@ -584,15 +631,17 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 
 	// Log creation details
 	loc := triggeringUpdate["location"].(map[string]interface{})
-	logHandler("Creating Note at Loc: %.1f, %.1f - Size: %.1f, %.1f Scale: %.3f",
-		loc["x"], loc["y"],
-		size["width"], size["height"],
-		scale)
+	log.Info("creating response note",
+		zap.Float64("x", loc["x"].(float64)),
+		zap.Float64("y", loc["y"].(float64)),
+		zap.Float64("width", size["width"].(float64)),
+		zap.Float64("height", size["height"].(float64)),
+		zap.Float64("scale", scale))
 
 	// Create the new Note
 	_, err := client.CreateNote(payload)
 	if err != nil {
-		logHandler("Failed to create Note. Error=%v", err)
+		log.Error("failed to create note", zap.Error(err))
 		return err
 	}
 
@@ -602,15 +651,16 @@ func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate U
 // isAzureOpenAIEndpoint checks if the endpoint is an Azure OpenAI endpoint
 func isAzureOpenAIEndpoint(endpoint string) bool {
 	return strings.Contains(strings.ToLower(endpoint), "openai.azure.com") ||
-		   strings.Contains(strings.ToLower(endpoint), "cognitiveservices.azure.com")
+		strings.Contains(strings.ToLower(endpoint), "cognitiveservices.azure.com")
 }
 
 // processAIImage generates and uploads an image from the AI's response
-func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config) error {
+func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, log *logging.Logger) error {
 	downloadsMutex.Lock()
 	defer downloadsMutex.Unlock()
 
-	logHandler("Generating and uploading AI image for prompt: %q", prompt)
+	log.Info("generating AI image",
+		zap.String("prompt_preview", truncateText(prompt, 50)))
 
 	// Ensure downloads directory exists
 	if err := os.MkdirAll(config.DownloadsDir, 0755); err != nil {
@@ -623,17 +673,17 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 
 	if config.ImageLLMURL != "" {
 		endpoint = config.ImageLLMURL
-		logHandler("Using image-specific API URL: %s", endpoint)
+		log.Debug("using image-specific API URL", zap.String("endpoint", endpoint))
 	} else if config.AzureOpenAIEndpoint != "" {
 		endpoint = config.AzureOpenAIEndpoint
 		isAzure = true
-		logHandler("Using Azure OpenAI endpoint: %s", endpoint)
+		log.Debug("using Azure OpenAI endpoint", zap.String("endpoint", endpoint))
 	} else if config.BaseLLMURL != "" {
 		endpoint = config.BaseLLMURL
-		logHandler("Using base LLM URL for image generation: %s", endpoint)
+		log.Debug("using base LLM URL for image generation", zap.String("endpoint", endpoint))
 	} else {
 		endpoint = "https://api.openai.com/v1"
-		logHandler("Using default OpenAI endpoint: %s", endpoint)
+		log.Debug("using default OpenAI endpoint", zap.String("endpoint", endpoint))
 	}
 
 	// Check if this is an Azure endpoint
@@ -643,14 +693,14 @@ func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string
 
 	// Generate the image using the appropriate API
 	if isAzure {
-		return processAIImageAzure(ctx, client, prompt, update, config, endpoint)
+		return processAIImageAzure(ctx, client, prompt, update, config, endpoint, log)
 	} else {
-		return processAIImageOpenAI(ctx, client, prompt, update, config, endpoint)
+		return processAIImageOpenAI(ctx, client, prompt, update, config, endpoint, log)
 	}
 }
 
 // processAIImageOpenAI generates images using standard OpenAI API
-func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, endpoint string) error {
+func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, endpoint string, log *logging.Logger) error {
 	// Generate the image using the configured API endpoint
 	imageConfig := openai.DefaultConfig(config.OpenAIAPIKey)
 	imageConfig.BaseURL = endpoint
@@ -667,16 +717,15 @@ func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt 
 	imageConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
 	aiClient := openai.NewClientWithConfig(imageConfig)
 
-	// Log the image request details
-	logHandler("Creating image with prompt: %s", prompt)
-
 	// Use the configured image model
 	model := config.OpenAIImageModel
 	if model == "" {
 		model = "dall-e-3" // Default fallback
 	}
 
-	logHandler("Using image generation model: %s", model)
+	log.Info("creating image with OpenAI",
+		zap.String("model", model),
+		zap.String("prompt_preview", truncateText(prompt, 50)))
 
 	// Create image request with model-specific parameters
 	imageReq := openai.ImageRequest{
@@ -693,26 +742,27 @@ func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt 
 
 	image, err := aiClient.CreateImage(ctx, imageReq)
 	if err != nil {
+		log.Error("failed to generate AI image", zap.Error(err))
 		return fmt.Errorf("failed to generate AI image: %w", err)
 	}
 
 	// Validate image response
 	if image.Data == nil {
-		logHandler("API returned nil Data field")
+		log.Error("API returned nil Data field")
 		return fmt.Errorf("no image data returned from API")
 	}
 
 	if len(image.Data) == 0 {
-		logHandler("API returned empty Data array")
+		log.Error("API returned empty Data array")
 		return fmt.Errorf("no image data returned from API")
 	}
 
 	if image.Data[0].URL == "" {
-		logHandler("API returned empty URL")
+		log.Error("API returned empty URL")
 		return fmt.Errorf("no image URL returned from API")
 	}
 
-	logHandler("Successfully received image URL from API")
+	log.Debug("successfully received image URL from API")
 
 	// Download the image
 	req, err := http.NewRequestWithContext(ctx, "GET", image.Data[0].URL, nil)
@@ -764,7 +814,10 @@ func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt 
 		"scale": update["scale"].(float64) / 3,
 	}
 
-	logHandler("Creating image with payload: %+v", payload)
+	log.Debug("creating image widget",
+		zap.Float64("x", x),
+		zap.Float64("y", y))
+
 	_, err = client.CreateImage(imagePath, payload)
 	if err != nil {
 		return fmt.Errorf("failed to create image: %w", err)
@@ -774,13 +827,14 @@ func processAIImageOpenAI(ctx context.Context, client *canvusapi.Client, prompt 
 }
 
 // processAIImageAzure generates images using Azure OpenAI API
-func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, endpoint string) error {
+func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, endpoint string, log *logging.Logger) error {
 	// Validate Azure configuration
 	if config.AzureOpenAIDeployment == "" {
 		return fmt.Errorf("Azure OpenAI deployment name is required but not configured. Please set AZURE_OPENAI_DEPLOYMENT")
 	}
 
-	logHandler("Using Azure OpenAI deployment: %s", config.AzureOpenAIDeployment)
+	log.Info("using Azure OpenAI deployment",
+		zap.String("deployment", config.AzureOpenAIDeployment))
 
 	// Create Azure-specific client configuration
 	imageConfig := openai.DefaultConfig(config.OpenAIAPIKey)
@@ -792,12 +846,13 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 	// Azure OpenAI uses different authentication - we'll handle this in the request
 	aiClient := openai.NewClientWithConfig(imageConfig)
 
-	// Log the image request details
-	logHandler("Creating Azure OpenAI image with prompt: %s", prompt)
-
 	// For Azure, we need to use the deployment name as the model
 	// Map Azure deployment names to appropriate parameters
 	model := config.AzureOpenAIDeployment
+
+	log.Info("creating Azure OpenAI image",
+		zap.String("model", model),
+		zap.String("prompt_preview", truncateText(prompt, 50)))
 
 	// Create image request with Azure-specific parameters
 	imageReq := openai.ImageRequest{
@@ -811,31 +866,32 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 	// Only add style for dalle3 deployment (not gpt-image-1)
 	if strings.Contains(strings.ToLower(model), "dalle3") || strings.Contains(strings.ToLower(model), "dall-e") {
 		imageReq.Style = openai.CreateImageStyleVivid
-		logHandler("Added style parameter for DALL-E model")
+		log.Debug("added style parameter for DALL-E model")
 	}
 
 	image, err := aiClient.CreateImage(ctx, imageReq)
 	if err != nil {
+		log.Error("failed to generate Azure AI image", zap.Error(err))
 		return fmt.Errorf("failed to generate Azure AI image: %w", err)
 	}
 
 	// Validate image response (same as OpenAI)
 	if image.Data == nil {
-		logHandler("Azure API returned nil Data field")
+		log.Error("Azure API returned nil Data field")
 		return fmt.Errorf("no image data returned from Azure API")
 	}
 
 	if len(image.Data) == 0 {
-		logHandler("Azure API returned empty Data array")
+		log.Error("Azure API returned empty Data array")
 		return fmt.Errorf("no image data returned from Azure API")
 	}
 
 	if image.Data[0].URL == "" {
-		logHandler("Azure API returned empty URL")
+		log.Error("Azure API returned empty URL")
 		return fmt.Errorf("no image URL returned from Azure API")
 	}
 
-	logHandler("Successfully received image URL from Azure API")
+	log.Debug("successfully received image URL from Azure API")
 
 	// Download the image (same as OpenAI)
 	req, err := http.NewRequestWithContext(ctx, "GET", image.Data[0].URL, nil)
@@ -887,7 +943,10 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 		"scale": update["scale"].(float64) / 3,
 	}
 
-	logHandler("Creating Azure image with payload: %+v", payload)
+	log.Debug("creating Azure image widget",
+		zap.Float64("x", x),
+		zap.Float64("y", y))
+
 	_, err = client.CreateImage(imagePath, payload)
 	if err != nil {
 		return fmt.Errorf("failed to create Azure image: %w", err)
@@ -897,25 +956,34 @@ func processAIImageAzure(ctx context.Context, client *canvusapi.Client, prompt s
 }
 
 // handleSnapshot processes Snapshot widgets for handwriting recognition
-func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config) {
+func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+	correlationID := generateCorrelationID()
+	imageID := update["id"].(string)
+
+	// Create a logger with widget context
+	log := logger.With(
+		zap.String("correlation_id", correlationID),
+		zap.String("widget_id", imageID),
+		zap.String("widget_type", "Snapshot"),
+	)
+
 	start := time.Now()
 	downloadsMutex.Lock()
 	defer downloadsMutex.Unlock()
 
-	imageID := update["id"].(string)
-
 	// Log trigger widget details
 	triggerLoc := update["location"].(map[string]interface{})
 	triggerSize := update["size"].(map[string]interface{})
-	logHandler("Snapshot Details:")
-	logHandler("- ID: %s", imageID)
-	logHandler("- Location: %d,%d", int(triggerLoc["x"].(float64)), int(triggerLoc["y"].(float64)))
-	logHandler("- Size: %d,%d", int(triggerSize["width"].(float64)), int(triggerSize["height"].(float64)))
+	log.Info("processing snapshot",
+		zap.Float64("x", triggerLoc["x"].(float64)),
+		zap.Float64("y", triggerLoc["y"].(float64)),
+		zap.Float64("width", triggerSize["width"].(float64)),
+		zap.Float64("height", triggerSize["height"].(float64)))
 
 	// Create processing note
-	processingNoteID, err := createProcessingNote(client, update, config)
+	processingNoteID, err := createProcessingNote(client, update, config, log)
 	if err != nil {
-		logHandler("Failed to create processing note: %v", err)
+		log.Error("failed to create processing note", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return // Keep snapshot
 	}
@@ -935,55 +1003,63 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	var fileInfo os.FileInfo
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		logHandler("Download attempt %d/%d for image ID: %s", attempt, maxRetries, imageID)
+		log.Debug("download attempt",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries))
 
 		if attempt > 1 {
 			// Update note with countdown
 			for countdown := 3; countdown > 0; countdown-- {
 				updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 					"text": fmt.Sprintf("Download failed. Retrying in %d...", countdown),
-				}, config)
+				}, config, log)
 				time.Sleep(time.Second)
 			}
 		}
 
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": fmt.Sprintf("Downloading snapshot... (Attempt %d/%d)", attempt, maxRetries),
-		}, config)
+		}, config, log)
 
 		// Try to download
-		logHandler("Attempting to download image: %s", imageID)
+		log.Debug("attempting to download image")
 		downloadErr = client.DownloadImage(imageID, downloadPath)
 		if downloadErr != nil {
-			logHandler("Download attempt %d failed: %v", attempt, downloadErr)
+			log.Warn("download attempt failed",
+				zap.Int("attempt", attempt),
+				zap.Error(downloadErr))
 			continue
 		}
 
 		// Verify the downloaded file
 		fileInfo, err = os.Stat(downloadPath)
 		if err != nil {
-			logHandler("File verification failed after download attempt %d: %v", attempt, err)
+			log.Warn("file verification failed after download",
+				zap.Int("attempt", attempt),
+				zap.Error(err))
 			downloadErr = fmt.Errorf("file verification failed: %w", err)
 			continue
 		}
 
 		if fileInfo.Size() == 0 {
-			logHandler("Downloaded file is empty after attempt %d", attempt)
+			log.Warn("downloaded file is empty", zap.Int("attempt", attempt))
 			downloadErr = fmt.Errorf("downloaded file is empty")
 			continue
 		}
 
-		logHandler("Download attempt %d successful - File size: %d bytes", attempt, fileInfo.Size())
+		log.Debug("download successful",
+			zap.Int("attempt", attempt),
+			zap.Int64("file_size", fileInfo.Size()))
 		downloadErr = nil
 		break
 	}
 
 	// If all download attempts failed
 	if downloadErr != nil {
-		logHandler("All download attempts failed for image ID %s: %v", imageID, downloadErr)
+		log.Error("all download attempts failed", zap.Error(downloadErr))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to download image after multiple attempts.\nClick the snapshot again to retry.",
-		}, config)
+			"text": " Failed to download image after multiple attempts.\nClick the snapshot again to retry.",
+		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return // Keep snapshot
 	}
@@ -991,25 +1067,27 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	// Read image data
 	imageData, err := os.ReadFile(downloadPath)
 	if err != nil {
-		logHandler("Failed to read image data: %v", err)
+		log.Error("failed to read image data", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to read image data.\nClick the snapshot again to retry.",
-		}, config)
+			"text": " Failed to read image data.\nClick the snapshot again to retry.",
+		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		os.Remove(downloadPath)
 		return // Keep snapshot
 	}
 
-	logHandler("Successfully read image data - Size: %d bytes", len(imageData))
+	log.Debug("successfully read image data",
+		zap.Int("size_bytes", len(imageData)))
+
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "Processing image through OCR... Please wait.",
-	}, config)
+	}, config, log)
 
 	// Perform OCR
-	ocrText, err := performGoogleVisionOCR(ctx, imageData, config)
+	ocrText, err := performGoogleVisionOCR(ctx, imageData, config, log)
 	if err != nil {
-		logHandler("Failed to perform OCR: %v", err)
-		errorMessage := "❌ Failed to process image.\n\n"
+		log.Error("failed to perform OCR", zap.Error(err))
+		errorMessage := " Failed to process image.\n\n"
 		if strings.Contains(err.Error(), "no text found") {
 			errorMessage += "No readable text was found in the image."
 		} else {
@@ -1019,7 +1097,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": errorMessage,
-		}, config)
+		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		os.Remove(downloadPath)
 		return // Keep snapshot
@@ -1027,35 +1105,35 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": "Creating response note...",
-	}, config)
+	}, config, log)
 
 	// Create response note
-	if err := createNoteFromResponse(ocrText, imageID, update, false, client, config); err != nil {
-		logHandler("Failed to create response note: %v", err)
+	if err := createNoteFromResponse(ocrText, imageID, update, false, client, config, log); err != nil {
+		log.Error("failed to create response note", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to create response note.\nClick the snapshot again to retry.",
-		}, config)
+			"text": " Failed to create response note.\nClick the snapshot again to retry.",
+		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		os.Remove(downloadPath)
 		return // Keep snapshot
 	}
 
 	// Only cleanup if everything succeeded
-	logHandler("OCR process completed successfully, cleaning up resources")
+	log.Debug("OCR process completed successfully, cleaning up resources")
 
 	// Clean up the downloaded file
 	if err := os.Remove(downloadPath); err != nil {
-		logHandler("Warning: Failed to remove downloaded file: %v", err)
+		log.Warn("failed to remove downloaded file", zap.Error(err))
 	}
 
 	// Delete the processing note
-	if err := deleteTriggeringWidget(client, "note", processingNoteID); err != nil {
-		logHandler("Warning: Failed to delete processing note: %v", err)
+	if err := deleteTriggeringWidget(client, "note", processingNoteID, log); err != nil {
+		log.Warn("failed to delete processing note", zap.Error(err))
 	}
 
 	// Only delete the snapshot after complete success
-	if err := deleteTriggeringWidget(client, "image", imageID); err != nil {
-		logHandler("Warning: Failed to delete snapshot: %v", err)
+	if err := deleteTriggeringWidget(client, "image", imageID, log); err != nil {
+		log.Warn("failed to delete snapshot", zap.Error(err))
 	}
 
 	// Update metrics
@@ -1064,7 +1142,8 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	handlerMetrics.processingDuration += time.Since(start)
 	metricsMutex.Unlock()
 
-	logHandler("✅ Completed snapshot processing (took %v)", time.Since(start))
+	log.Info("completed snapshot processing",
+		zap.Duration("duration", time.Since(start)))
 }
 
 // getPDFChunkPrompt returns the system message for PDF chunk analysis
@@ -1078,31 +1157,43 @@ Format your response as: {"type": "text", "content": "your analysis"}`
 }
 
 // handlePDFPrecis generates a summary of a PDF widget
-func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Config) {
-	start := time.Now()
+func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+	correlationID := generateCorrelationID()
 	parentID, _ := update["parent_id"].(string)
+
+	// Create a logger with widget context
+	log := logger.With(
+		zap.String("correlation_id", correlationID),
+		zap.String("widget_id", update["id"].(string)),
+		zap.String("parent_id", parentID),
+		zap.String("widget_type", "PDF"),
+	)
+
+	start := time.Now()
 
 	pdfConfig := *config
 	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel
 
 	parentWidget, err := client.GetWidget(parentID, false)
 	if err != nil {
-		logHandler("❌ Failed to get parent PDF widget: %v", err)
+		log.Error("failed to get parent PDF widget", zap.Error(err))
 		return
 	}
 
 	pdfLoc := parentWidget["location"].(map[string]interface{})
 	pdfSize := parentWidget["size"].(map[string]interface{})
-	logHandler("Trigger Widget Details (PDF) - Loc: %d,%d - Size: %d,%d - Scale: %d",
-		int(pdfLoc["x"].(float64)),
-		int(pdfLoc["y"].(float64)),
-		int(pdfSize["width"].(float64)),
-		int(pdfSize["height"].(float64)),
-		int(parentWidget["scale"].(float64)))
+	log.Info("processing PDF precis",
+		zap.Float64("x", pdfLoc["x"].(float64)),
+		zap.Float64("y", pdfLoc["y"].(float64)),
+		zap.Float64("width", pdfSize["width"].(float64)),
+		zap.Float64("height", pdfSize["height"].(float64)),
+		zap.Float64("scale", parentWidget["scale"].(float64)))
 
 	widgetType, _ := parentWidget["widget_type"].(string)
 	if strings.ToLower(widgetType) != "pdf" {
-		logHandler("❌ Invalid widget type for PDF precis: Expected PDF, got %s", widgetType)
+		log.Error("invalid widget type for PDF precis",
+			zap.String("expected", "PDF"),
+			zap.String("actual", widgetType))
 		return
 	}
 
@@ -1113,7 +1204,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 
 	processingNote := map[string]interface{}{
 		"title": "PDF Analysis",
-		"text":  "⚙️ Starting PDF analysis...",
+		"text":  " Starting PDF analysis...",
 		"location": map[string]interface{}{
 			"x": triggerWidget["location"].(map[string]interface{})["x"].(float64) + 100.0,
 			"y": triggerWidget["location"].(map[string]interface{})["y"].(float64) + 100.0,
@@ -1130,7 +1221,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 
 	noteResp, err := client.CreateNote(processingNote)
 	if err != nil {
-		logHandler("❌ Failed to create processing note: %v", err)
+		log.Error("failed to create processing note", zap.Error(err))
 		return
 	}
 	processingNoteID := noteResp["id"].(string)
@@ -1141,29 +1232,29 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	// Download PDF
 	downloadPath := filepath.Join(config.DownloadsDir, fmt.Sprintf("temp_pdf_%s.pdf", parentID))
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": "📥 Downloading PDF...",
-	}, config)
+		"text": " Downloading PDF...",
+	}, config, log)
 
 	if err := client.DownloadPDF(parentID, downloadPath); err != nil {
-		logHandler("❌ Failed to download PDF: %v", err)
+		log.Error("failed to download PDF", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to download PDF",
-		}, config)
+			"text": " Failed to download PDF",
+		}, config, log)
 		return
 	}
 	defer os.Remove(downloadPath)
 
 	// Extract text
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": "📄 Extracting text from PDF...",
-	}, config)
+		"text": " Extracting text from PDF...",
+	}, config, log)
 
-	pdfText, err := extractPDFText(downloadPath)
+	pdfText, err := extractPDFText(downloadPath, log)
 	if err != nil {
-		logHandler("❌ PDF text extraction failed: %v", err)
+		log.Error("PDF text extraction failed", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to extract text from PDF",
-		}, config)
+			"text": " Failed to extract text from PDF",
+		}, config, log)
 		return
 	}
 
@@ -1171,9 +1262,12 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	chunks := splitIntoChunks(pdfText, int(config.PDFChunkSizeTokens))
 	totalChunks := len(chunks)
 
+	log.Info("PDF chunked for analysis",
+		zap.Int("total_chunks", totalChunks))
+
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": fmt.Sprintf("🔍 Preparing %d PDF sections for analysis...", totalChunks),
-	}, config)
+		"text": fmt.Sprintf(" Preparing %d PDF sections for analysis...", totalChunks),
+	}, config, log)
 
 	// Build message history for multi-chunk protocol
 	messages := []openai.ChatCompletionMessage{
@@ -1206,8 +1300,8 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 	})
 
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": "🤖 Generating final PDF analysis...",
-	}, config)
+		"text": " Generating final PDF analysis...",
+	}, config, log)
 
 	clientConfig := openai.DefaultConfig(pdfConfig.OpenAIAPIKey)
 	if pdfConfig.TextLLMURL != "" {
@@ -1219,87 +1313,102 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 	clientConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
 	aiClient := openai.NewClientWithConfig(clientConfig)
 
+	// Create metrics logger for inference tracking
+	metricsLogger := logging.NewMetricsLogger(log)
+	inferenceTimer := metricsLogger.StartInference(pdfConfig.OpenAINoteModel)
+
 	resp, err := aiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:       pdfConfig.OpenAINoteModel,
 		Messages:    messages,
 		MaxTokens:   int(pdfConfig.NoteResponseTokens),
 		Temperature: 0.3,
 	})
+
 	if err != nil {
-		logHandler("❌ PDF analysis failed: %v", err)
+		metricsLogger.EndInference(inferenceTimer, 0, 0)
+		log.Error("PDF analysis failed", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to generate PDF analysis",
-		}, config)
+			"text": " Failed to generate PDF analysis",
+		}, config, log)
 		return
 	}
+
 	if len(resp.Choices) == 0 {
-		logHandler("❌ No response choices returned from AI")
+		metricsLogger.EndInference(inferenceTimer, 0, 0)
+		log.Error("no response choices returned from AI")
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ No response from AI",
-		}, config)
+			"text": " No response from AI",
+		}, config, log)
 		return
 	}
+
+	// Estimate tokens for logging
+	promptTokens := len(pdfText) / 4
+	completionTokens := len(resp.Choices[0].Message.Content) / 4
+	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
 
 	rawResponse := resp.Choices[0].Message.Content
 	startIdx := strings.Index(rawResponse, "{")
 	endIdx := strings.LastIndex(rawResponse, "}")
 	if startIdx == -1 || endIdx == -1 || startIdx > endIdx {
-		logHandler("❌ Response does not contain valid JSON: %s", rawResponse)
+		log.Error("response does not contain valid JSON",
+			zap.String("raw_response", truncateText(rawResponse, 100)))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ AI response was not valid JSON",
-		}, config)
+			"text": " AI response was not valid JSON",
+		}, config, log)
 		return
 	}
 	jsonResponse := rawResponse[startIdx : endIdx+1]
 
 	var testParse map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
-		logHandler("❌ Invalid JSON in response: %v", err)
+		log.Error("invalid JSON in response", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ AI response was not valid JSON",
-		}, config)
+			"text": " AI response was not valid JSON",
+		}, config, log)
 		return
 	}
 	if _, ok := testParse["type"].(string); !ok {
-		logHandler("❌ Response missing 'type' field")
+		log.Error("response missing 'type' field")
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ AI response missing 'type' field",
-		}, config)
+			"text": " AI response missing 'type' field",
+		}, config, log)
 		return
 	}
 	content, ok := testParse["content"].(string)
 	if !ok {
-		logHandler("❌ Response missing 'content' field")
+		log.Error("response missing 'content' field")
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ AI response missing 'content' field",
-		}, config)
+			"text": " AI response missing 'content' field",
+		}, config, log)
 		return
 	}
 	// Convert escaped newlines to actual newlines
 	content = strings.ReplaceAll(content, "\\n", "\n")
 
-	err = createNoteFromResponse(content, parentID, triggerWidget, false, client, config)
+	err = createNoteFromResponse(content, parentID, triggerWidget, false, client, config, log)
 	if err != nil {
-		logHandler("❌ Failed to create summary note: %v", err)
+		log.Error("failed to create summary note", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": "❌ Failed to create summary note",
-		}, config)
+			"text": " Failed to create summary note",
+		}, config, log)
 		return
 	}
 
-	deleteTriggeringWidget(client, "note", processingNoteID)
-	deleteTriggeringWidget(client, "image", update["id"].(string))
+	deleteTriggeringWidget(client, "note", processingNoteID, log)
+	deleteTriggeringWidget(client, "image", update["id"].(string), log)
 
 	atomic.AddInt64(&handlerMetrics.processedPDFs, 1)
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(start)
 	metricsMutex.Unlock()
 
-	logHandler("✅ Completed PDF precis (took %v)", time.Since(start))
+	log.Info("completed PDF precis",
+		zap.Duration("duration", time.Since(start)))
 }
 
 // extractPDFText extracts text content from a PDF file
-func extractPDFText(pdfPath string) (string, error) {
+func extractPDFText(pdfPath string, log *logging.Logger) (string, error) {
 	// Open PDF file
 	f, r, err := pdf.Open(pdfPath)
 	if err != nil {
@@ -1310,6 +1419,9 @@ func extractPDFText(pdfPath string) (string, error) {
 	var textBuilder strings.Builder
 	totalPages := r.NumPage()
 
+	log.Debug("extracting text from PDF",
+		zap.Int("total_pages", totalPages))
+
 	// Extract text from each page
 	for pageIndex := 1; pageIndex <= totalPages; pageIndex++ {
 		p := r.Page(pageIndex)
@@ -1319,7 +1431,9 @@ func extractPDFText(pdfPath string) (string, error) {
 
 		text, err := p.GetPlainText(nil)
 		if err != nil {
-			logHandler("Warning: failed to extract text from page %d: %v", pageIndex, err)
+			log.Warn("failed to extract text from page",
+				zap.Int("page", pageIndex),
+				zap.Error(err))
 			continue // Skip problematic pages but continue processing
 		}
 		textBuilder.WriteString(text)
@@ -1364,7 +1478,7 @@ func splitIntoChunks(text string, maxChunkSize int) []string {
 	return chunks
 }
 
-func consolidateSummaries(ctx context.Context, summaries []string) (string, error) {
+func consolidateSummaries(ctx context.Context, summaries []string, log *logging.Logger) (string, error) {
 	// Create a PDF-specific config that uses the PDF model
 	pdfConfig := *config                                 // Create a copy of the config
 	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel // Use PDF model for all AI calls
@@ -1378,7 +1492,7 @@ func consolidateSummaries(ctx context.Context, summaries []string) (string, erro
 	# Conclusions`
 
 	combinedSummaries := strings.Join(summaries, "\n---\n")
-	return generateAIResponse(combinedSummaries, &pdfConfig, systemMessage)
+	return generateAIResponse(combinedSummaries, &pdfConfig, systemMessage, log)
 }
 
 // estimateTokenCount provides a rough estimate of tokens in a text
@@ -1388,9 +1502,18 @@ func estimateTokenCount(text string) int {
 }
 
 // handleCanvusPrecis processes Canvus widget summaries
-func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config) {
-	start := time.Now()
+func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger) {
+	correlationID := generateCorrelationID()
 	canvasID := update["id"].(string)
+
+	// Create a logger with widget context
+	log := logger.With(
+		zap.String("correlation_id", correlationID),
+		zap.String("widget_id", canvasID),
+		zap.String("widget_type", "CanvasPrecis"),
+	)
+
+	start := time.Now()
 
 	// Create a canvas-specific config that uses the canvas model
 	canvasConfig := *config                                       // Create a copy of the config
@@ -1398,7 +1521,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 
 	// Validate update
 	if err := validateUpdate(update); err != nil {
-		logHandler("Invalid Canvus precis update: %v", err)
+		log.Error("invalid Canvus precis update", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
@@ -1413,22 +1536,25 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 		"title": processingTitle,
 	})
 	if err != nil {
-		logHandler("Failed to update Canvus precis title: ID=%s, Error=%v", canvasID, err)
+		log.Error("failed to update Canvus precis title", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
 
 	// Fetch all widgets from the canvas
-	widgets, err := fetchCanvasWidgets(ctx, client, config)
+	widgets, err := fetchCanvasWidgets(ctx, client, config, log)
 	if err != nil {
-		logHandler("Failed to fetch widgets for Canvus precis: %v", err)
+		log.Error("failed to fetch widgets for Canvus precis", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
 
+	log.Info("fetched canvas widgets",
+		zap.Int("widget_count", len(widgets)))
+
 	// Generate and process the precis
-	if err := processCanvusPrecis(ctx, client, update, widgets, config); err != nil {
-		logHandler("Failed to process Canvus precis: ID=%s, Error=%v", canvasID, err)
+	if err := processCanvusPrecis(ctx, client, update, widgets, config, log); err != nil {
+		log.Error("failed to process Canvus precis", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
@@ -1439,13 +1565,16 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	metricsMutex.Unlock()
 
 	// Cleanup original widget
-	if err := deleteTriggeringWidget(client, update["widget_type"].(string), canvasID); err != nil {
-		logHandler("Failed to delete triggering Canvus precis widget: ID=%s, Error=%v", canvasID, err)
+	if err := deleteTriggeringWidget(client, update["widget_type"].(string), canvasID, log); err != nil {
+		log.Warn("failed to delete triggering Canvus precis widget", zap.Error(err))
 	}
+
+	log.Info("completed canvas precis",
+		zap.Duration("duration", time.Since(start)))
 }
 
 // fetchCanvasWidgets retrieves all widgets with retry logic
-func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *core.Config) ([]map[string]interface{}, error) {
+func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *core.Config, log *logging.Logger) ([]map[string]interface{}, error) {
 	var widgets []map[string]interface{}
 	var lastErr error
 
@@ -1458,8 +1587,10 @@ func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *c
 			if lastErr == nil {
 				return widgets, nil
 			}
-			logHandler("Attempt %d/%d failed to fetch widgets: %v",
-				attempt, config.MaxRetries, lastErr)
+			log.Warn("attempt failed to fetch widgets",
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", config.MaxRetries),
+				zap.Error(lastErr))
 			time.Sleep(config.RetryDelay)
 		}
 	}
@@ -1468,8 +1599,8 @@ func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *c
 }
 
 // processCanvusPrecis generates and creates a summary of the canvas
-func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config) error {
-	logHandler("Starting Canvus Precis processing")
+func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config, log *logging.Logger) error {
+	log.Info("starting Canvus Precis processing")
 
 	// Create a canvas-specific config that uses the canvas model
 	canvasConfig := *config                                       // Create a copy of the config
@@ -1478,12 +1609,12 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	// Log trigger widget details
 	triggerLoc := update["location"].(map[string]interface{})
 	triggerSize := update["size"].(map[string]interface{})
-	logHandler("Trigger Widget Details - Loc: %d,%d - Size: %d,%d - Scale: %d",
-		int(triggerLoc["x"].(float64)),
-		int(triggerLoc["y"].(float64)),
-		int(triggerSize["width"].(float64)),
-		int(triggerSize["height"].(float64)),
-		int(update["scale"].(float64)))
+	log.Debug("trigger widget details",
+		zap.Float64("x", triggerLoc["x"].(float64)),
+		zap.Float64("y", triggerLoc["y"].(float64)),
+		zap.Float64("width", triggerSize["width"].(float64)),
+		zap.Float64("height", triggerSize["height"].(float64)),
+		zap.Float64("scale", update["scale"].(float64)))
 
 	// Get icon location and add offset for processing note
 	iconLoc := update["location"].(map[string]interface{})
@@ -1495,7 +1626,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 	// Create processing note first
 	processingNote := map[string]interface{}{
 		"title":    processingNoteTitle,
-		"text":     "🔍 Analyzing canvas content...",
+		"text":     " Analyzing canvas content...",
 		"location": processingNoteLoc,
 		"size": map[string]interface{}{
 			"width":  400.0,
@@ -1525,13 +1656,13 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 
 	// Update processing status
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": "🔍 Analyzing canvas content...\nProcessing " + strconv.Itoa(len(filteredWidgets)) + " widgets",
-	}, config)
+		"text": " Analyzing canvas content...\nProcessing " + strconv.Itoa(len(filteredWidgets)) + " widgets",
+	}, config, log)
 
 	// Convert filtered widgets to JSON for AI processing
 	widgetsJSON, err := json.Marshal(filteredWidgets)
 	if err != nil {
-		deleteTriggeringWidget(client, "note", processingNoteID)
+		deleteTriggeringWidget(client, "note", processingNoteID, log)
 		return fmt.Errorf("failed to marshal widgets data: %w", err)
 	}
 
@@ -1550,46 +1681,58 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 
 	// Update processing status
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": "🤖 Generating canvas analysis...\nThis may take a moment.",
-	}, config)
+		"text": " Generating canvas analysis...\nThis may take a moment.",
+	}, config, log)
+
+	// Create metrics logger for inference tracking
+	metricsLogger := logging.NewMetricsLogger(log)
+	inferenceTimer := metricsLogger.StartInference(canvasConfig.OpenAINoteModel)
 
 	// Generate AI response
-	rawResponse, err := generateAIResponse(string(widgetsJSON), &canvasConfig, systemMessage)
+	rawResponse, err := generateAIResponse(string(widgetsJSON), &canvasConfig, systemMessage, log)
 	if err != nil {
-		deleteTriggeringWidget(client, "note", processingNoteID)
-		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string), config)
+		metricsLogger.EndInference(inferenceTimer, 0, 0)
+		deleteTriggeringWidget(client, "note", processingNoteID, log)
+		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string), config, log)
 	}
+
+	// Estimate tokens for logging
+	promptTokens := len(widgetsJSON) / 4
+	completionTokens := len(rawResponse) / 4
+	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
 
 	// Parse the AI response JSON and extract the content field
 	var aiResponse map[string]interface{}
 	if err := json.Unmarshal([]byte(rawResponse), &aiResponse); err != nil {
-		deleteTriggeringWidget(client, "note", processingNoteID)
+		deleteTriggeringWidget(client, "note", processingNoteID, log)
 		return fmt.Errorf("failed to parse AI response JSON: %w", err)
 	}
 	content, ok := aiResponse["content"].(string)
 	if !ok {
-		deleteTriggeringWidget(client, "note", processingNoteID)
+		deleteTriggeringWidget(client, "note", processingNoteID, log)
 		return fmt.Errorf("AI response missing 'content' field")
 	}
 	// Convert escaped newlines to actual newlines
 	content = strings.ReplaceAll(content, "\\n", "\n")
 
 	// Create response note
-	err = createNoteFromResponse(content, update["id"].(string), update, false, client, config)
+	err = createNoteFromResponse(content, update["id"].(string), update, false, client, config, log)
 	if err != nil {
-		deleteTriggeringWidget(client, "note", processingNoteID)
+		deleteTriggeringWidget(client, "note", processingNoteID, log)
 		return fmt.Errorf("failed to create response note: %w", err)
 	}
 
 	// Clean up processing note
-	deleteTriggeringWidget(client, "note", processingNoteID)
+	deleteTriggeringWidget(client, "note", processingNoteID, log)
 
 	return nil
 }
 
 // deleteTriggeringWidget safely deletes a widget by type and ID
-func deleteTriggeringWidget(client *canvusapi.Client, widgetType, widgetID string) error {
-	logHandler("Deleting triggering widget: Type=%s, ID=%s", widgetType, widgetID)
+func deleteTriggeringWidget(client *canvusapi.Client, widgetType, widgetID string, log *logging.Logger) error {
+	log.Debug("deleting triggering widget",
+		zap.String("widget_type", widgetType),
+		zap.String("widget_id", widgetID))
 
 	// Normalize the widget type to lowercase for comparison
 	var err error
@@ -1614,15 +1757,15 @@ func deleteTriggeringWidget(client *canvusapi.Client, widgetType, widgetID strin
 }
 
 // Cleanup performs all necessary cleanup operations for the handlers package
-func Cleanup() {
+func Cleanup(log *logging.Logger) {
 	// Clean up downloads directory
-	if err := CleanupDownloads(); err != nil {
-		logHandler("Error cleaning up downloads: %v", err)
+	if err := CleanupDownloads(log); err != nil {
+		log.Error("error cleaning up downloads", zap.Error(err))
 	}
 }
 
 // CleanupDownloads removes temporary files from downloads directory
-func CleanupDownloads() error {
+func CleanupDownloads(log *logging.Logger) error {
 	pattern := filepath.Join(config.DownloadsDir, "temp_*")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
@@ -1631,15 +1774,17 @@ func CleanupDownloads() error {
 
 	for _, match := range matches {
 		if err := os.Remove(match); err != nil {
-			logHandler("Failed to remove temporary file %s: %v", match, err)
+			log.Warn("failed to remove temporary file",
+				zap.String("file", match),
+				zap.Error(err))
 		}
 	}
 	return nil
 }
 
 // handleAIError creates a friendly error note, clears processing text, and logs the error
-func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string, config *core.Config) error {
-	logHandler("❌ AI Processing Error: %v", err)
+func handleAIError(ctx context.Context, client *canvusapi.Client, update Update, err error, baseText string, config *core.Config, log *logging.Logger) error {
+	log.Error("AI processing error", zap.Error(err))
 
 	errorMessage := `# AI Processing Error
 
@@ -1657,10 +1802,10 @@ I apologize, but I encountered an error while processing your request.
 	errorContent := fmt.Sprintf(errorMessage, err)
 
 	// Create error note using fixed size and positioning
-	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client, config)
+	errResp := createNoteFromResponse(errorContent, update["id"].(string), update, true, client, config, log)
 
 	// Clear the extra processing text from the original note
-	clearProcessingStatus(client, update["id"].(string), baseText, config)
+	clearProcessingStatus(client, update["id"].(string), baseText, config, log)
 
 	return errResp
 }
@@ -1702,29 +1847,29 @@ func (m *Monitor) handleAIIcon(update Update) error {
 	case "AI_Icon_PDF_Precis":
 		// First check if the icon is placed on the shared canvas - if so, ignore it
 		if parentID == sharedCanvas.ID {
-			logHandler("Ignoring PDF precis icon on shared canvas")
+			m.logger.Debug("ignoring PDF precis icon on shared canvas")
 			return nil
 		}
 
 		// Process the PDF once the icon is placed on a PDF widget
-		go handlePDFPrecis(update, m.client, m.config)
+		go handlePDFPrecis(update, m.client, m.config, m.logger)
 
 	case "AI_Icon_Canvus_Precis":
 		// For canvas precis, we want the parent to be the shared canvas
 		if parentID != sharedCanvas.ID {
 			return fmt.Errorf("AI_Icon_Canvus_Precis ParentID does not match SharedCanvasID")
 		}
-		go handleCanvusPrecis(update, m.client, m.config)
+		go handleCanvusPrecis(update, m.client, m.config, m.logger)
 
 	default:
-		color.Blue("Unrecognized AI_Icon type: %s", title)
+		m.logger.Debug("unrecognized AI_Icon type", zap.String("title", title))
 	}
 	return nil
 }
 
 // Helper function to create processing notes (reduces duplication)
-func createProcessingNote(client *canvusapi.Client, update Update, config *core.Config) (string, error) {
-	absoluteLoc, err := getAbsoluteLocation(client, update, config)
+func createProcessingNote(client *canvusapi.Client, update Update, config *core.Config, log *logging.Logger) (string, error) {
+	absoluteLoc, err := getAbsoluteLocation(client, update, config, log)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute location: %w", err)
 	}
@@ -1750,22 +1895,22 @@ func createProcessingNote(client *canvusapi.Client, update Update, config *core.
 }
 
 // Helper function for cleanup (reduces duplication)
-func cleanup(client *canvusapi.Client, processingNoteID, imageID, downloadPath string) {
+func cleanup(client *canvusapi.Client, processingNoteID, imageID, downloadPath string, log *logging.Logger) {
 	// Only try to delete the processing note if we have an ID
 	if processingNoteID != "" {
 		if err := client.DeleteNote(processingNoteID); err != nil {
-			logHandler("Warning: Failed to delete processing note: %v", err)
+			log.Warn("failed to delete processing note", zap.Error(err))
 			// Try to update the note instead of deleting if delete fails
 			updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-				"text": "❌ Process completed with errors.\nYou can delete this note.",
-			}, config)
+				"text": " Process completed with errors.\nYou can delete this note.",
+			}, config, log)
 		}
 	}
 
 	// Only try to delete the image if we have an ID
 	if imageID != "" {
 		if err := client.DeleteImage(imageID); err != nil {
-			logHandler("Warning: Failed to delete snapshot image: %v", err)
+			log.Warn("failed to delete snapshot image", zap.Error(err))
 		}
 	}
 
@@ -1773,15 +1918,15 @@ func cleanup(client *canvusapi.Client, processingNoteID, imageID, downloadPath s
 	if downloadPath != "" {
 		if err := os.Remove(downloadPath); err != nil {
 			if !os.IsNotExist(err) { // Only log if error is not "file doesn't exist"
-				logHandler("Warning: Failed to remove local snapshot file: %v", err)
+				log.Warn("failed to remove local snapshot file", zap.Error(err))
 			}
 		}
 	}
 }
 
 // Add performGoogleVisionOCR function
-func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.Config) (string, error) {
-	logHandler("Starting Google Vision OCR process")
+func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.Config, log *logging.Logger) (string, error) {
+	log.Info("starting Google Vision OCR process")
 
 	apiKey := config.GoogleVisionKey
 	if apiKey == "" {
@@ -1789,17 +1934,16 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 	}
 
 	// Validate API key with minimal request
-	if err := validateGoogleAPIKey(ctx, apiKey, config); err != nil {
-		logHandler("❌ Google Vision API key validation failed: %v", err)
+	if err := validateGoogleAPIKey(ctx, apiKey, config, log); err != nil {
+		log.Error("Google Vision API key validation failed", zap.Error(err))
 		return "", fmt.Errorf("invalid API key: %w", err)
 	}
 
-	logHandler("✅ Google Vision API key validated successfully")
-
-	// Rest of the existing function...
+	log.Debug("Google Vision API key validated successfully")
 
 	// Log image data details
-	logHandler("Image data received, size: %d bytes", len(imageData))
+	log.Debug("image data received",
+		zap.Int("size_bytes", len(imageData)))
 
 	// Create request body as JSON
 	requestBody := GoogleVisionRequest{
@@ -1836,11 +1980,12 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
-	logHandler("Request JSON created, size: %d bytes", len(jsonData))
+	log.Debug("request JSON created",
+		zap.Int("size_bytes", len(jsonData)))
 
 	// Create HTTP request
 	url := fmt.Sprintf("%s?key=%s", visionAPIEndpoint, apiKey)
-	logHandler("Making request to URL: %s", strings.Replace(url, apiKey, "REDACTED", 1))
+	log.Debug("making request to Google Vision API")
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -1849,7 +1994,7 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 	req.Header.Set("Content-Type", "application/json")
 
 	// Send request
-	logHandler("Sending request to Google Vision API...")
+	log.Debug("sending request to Google Vision API")
 	httpClient := core.GetDefaultHTTPClient(config)
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -1858,8 +2003,9 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 	defer resp.Body.Close()
 
 	// Log response status
-	logHandler("Received response from Google Vision API. Status: %d %s",
-		resp.StatusCode, resp.Status)
+	log.Debug("received response from Google Vision API",
+		zap.Int("status_code", resp.StatusCode),
+		zap.String("status", resp.Status))
 
 	// Only consider it a failure if the API response is not 200
 	if resp.StatusCode != http.StatusOK {
@@ -1872,7 +2018,8 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 	if err != nil {
 		return "", fmt.Errorf("failed to read response body: %w", err)
 	}
-	logHandler("Response body size: %d bytes", len(bodyBytes))
+	log.Debug("response body received",
+		zap.Int("size_bytes", len(bodyBytes)))
 
 	var visionResponse GoogleVisionResponse
 	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&visionResponse); err != nil {
@@ -1892,13 +2039,16 @@ func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.
 		return "", fmt.Errorf("no text found in image")
 	}
 
-	// Remove the error phrase checks since we don't want to trigger on words in the actual content
+	log.Info("OCR completed successfully",
+		zap.Int("text_length", len(extractedText)))
+
 	return extractedText, nil
 }
 
 // First, let's add better logging for the Google Vision API authentication
-func processImage(ctx context.Context, client *canvusapi.Client, imageID string, processingNoteID string) error {
-	logHandler("Starting OCR process for image: %s", imageID)
+func processImage(ctx context.Context, client *canvusapi.Client, imageID string, processingNoteID string, log *logging.Logger) error {
+	log.Info("starting OCR process for image",
+		zap.String("image_id", imageID))
 
 	// Download the snapshot using the standard client method
 	downloadPath := filepath.Join(
@@ -1907,21 +2057,22 @@ func processImage(ctx context.Context, client *canvusapi.Client, imageID string,
 	)
 
 	if err := client.DownloadImage(imageID, downloadPath); err != nil {
-		logHandler("❌ Failed to download image %s: %v", imageID, err)
+		log.Error("failed to download image", zap.Error(err))
 		return fmt.Errorf("download failed: %w", err)
 	}
 	defer os.Remove(downloadPath) // Clean up file after function returns
 
 	// Verify Google Vision API key
 	if len(config.GoogleVisionKey) < 30 {
-		logHandler("❌ Invalid Google Vision API key length: %d chars", len(config.GoogleVisionKey))
+		log.Error("invalid Google Vision API key length",
+			zap.Int("length", len(config.GoogleVisionKey)))
 		return fmt.Errorf("invalid Google Vision API key")
 	}
 
 	// Perform OCR
-	ocrResult, err := performOCR(downloadPath, config.GoogleVisionKey, config)
+	ocrResult, err := performOCR(downloadPath, config.GoogleVisionKey, config, log)
 	if err != nil {
-		logHandler("❌ OCR failed: %v", err)
+		log.Error("OCR failed", zap.Error(err))
 		// Don't delete widgets on failure, just return the error
 		return fmt.Errorf("OCR failed: %w", err)
 	}
@@ -1943,28 +2094,30 @@ func processImage(ctx context.Context, client *canvusapi.Client, imageID string,
 
 	_, err = client.CreateNote(notePayload)
 	if err != nil {
-		logHandler("❌ Failed to create response note: %v", err)
+		log.Error("failed to create response note", zap.Error(err))
 		return fmt.Errorf("failed to create response note: %w", err)
 	}
 
 	// Only delete original widgets after successful OCR and response creation
 	if err := client.DeleteNote(processingNoteID); err != nil {
-		logHandler("⚠️ Failed to delete processing note: %v", err)
+		log.Warn("failed to delete processing note", zap.Error(err))
 		// Continue anyway as this is not critical
 	}
 
 	if err := client.DeleteImage(imageID); err != nil {
-		logHandler("⚠️ Failed to delete original image: %v", err)
+		log.Warn("failed to delete original image", zap.Error(err))
 		// Continue anyway as this is not critical
 	}
 
-	logHandler("✅ Successfully processed image %s and created response note", imageID)
+	log.Info("successfully processed image and created response note",
+		zap.String("image_id", imageID))
 	return nil
 }
 
 // Improve the OCR function with better error handling
-func performOCR(imagePath string, apiKey string, config *core.Config) (string, error) {
-	logHandler("Starting Google Vision OCR for image: %s", filepath.Base(imagePath))
+func performOCR(imagePath string, apiKey string, config *core.Config, log *logging.Logger) (string, error) {
+	log.Info("starting Google Vision OCR",
+		zap.String("image", filepath.Base(imagePath)))
 
 	// Read image file
 	imageBytes, err := os.ReadFile(imagePath)
@@ -2012,7 +2165,9 @@ func performOCR(imagePath string, apiKey string, config *core.Config) (string, e
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logHandler("❌ Google Vision API error response: %s", string(body))
+		log.Error("Google Vision API error response",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("body", string(body)))
 		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, resp.Status)
 	}
 
@@ -2035,12 +2190,13 @@ func performOCR(imagePath string, apiKey string, config *core.Config) (string, e
 	}
 
 	text := textAnnotations[0].(map[string]interface{})["description"].(string)
-	logHandler("✅ Successfully extracted text from image")
+	log.Info("successfully extracted text from image",
+		zap.Int("text_length", len(text)))
 	return text, nil
 }
 
 // validateGoogleAPIKey makes a minimal API call to verify the key works
-func validateGoogleAPIKey(ctx context.Context, apiKey string, config *core.Config) error {
+func validateGoogleAPIKey(ctx context.Context, apiKey string, config *core.Config, log *logging.Logger) error {
 	// Create minimal request with a 1x1 pixel transparent PNG
 	minimalImage := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
@@ -2093,6 +2249,7 @@ func validateGoogleAPIKey(ctx context.Context, apiKey string, config *core.Confi
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
+		log.Debug("API key validation successful")
 		return nil
 	}
 
