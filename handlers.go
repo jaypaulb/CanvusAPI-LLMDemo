@@ -1,11 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,9 +21,6 @@ import (
 	"go_backend/db"
 	"go_backend/handlers"
 	"go_backend/logging"
-
-	"bytes"
-	"encoding/base64"
 
 	"github.com/google/uuid"
 	"github.com/ledongthuc/pdf"
@@ -554,156 +552,69 @@ func getAbsoluteLocation(client *canvusapi.Client, widget Update, config *core.C
 
 // createNoteFromResponse creates a new Note widget based on the AI response.
 func createNoteFromResponse(content, triggeringNoteID string, triggeringUpdate Update, errorNote bool, client *canvusapi.Client, config *core.Config, log *logging.Logger) error {
-	// Log content preview
 	log.Debug("creating note from response",
 		zap.String("content_preview", truncateText(content, 30)),
 		zap.Bool("is_error_note", errorNote))
 
-	// Get original properties
-	originalSize := triggeringUpdate["size"].(map[string]interface{})
-	originalWidth := originalSize["width"].(float64)
-	originalHeight := originalSize["height"].(float64)
+	// Extract original properties using atoms
+	originalSize := handlers.ExtractSize(triggeringUpdate["size"].(map[string]interface{}))
 	originalScale := triggeringUpdate["scale"].(float64)
 
-	var size map[string]interface{}
+	// Calculate size and scale based on content
+	var noteSize handlers.NoteSize
 	var scale float64
-
 	if errorNote {
-		size = map[string]interface{}{
-			"width":  originalWidth,
-			"height": originalHeight,
-		}
+		noteSize = originalSize
 		scale = originalScale
 	} else {
-		// Calculate content length in tokens (rough approximation: 1 token = 4 characters)
-		contentTokens := float64(len(content)) / 4.0
-
-		// For short content (< 150 tokens), use original size and scale
-		if contentTokens < 150 {
-			size = map[string]interface{}{
-				"width":  originalWidth,
-				"height": originalHeight,
-			}
-			scale = originalScale
-
-			log.Debug("short content using original size",
-				zap.Float64("content_tokens", contentTokens))
-		} else {
-			// Calculate content requirements
-			contentLines := float64(strings.Count(content, "\n") + 1)
-			maxLineLength := 0.0
-			averageLineLength := 0.0
-			totalChars := 0.0
-
-			// Calculate max and average line lengths
-			lines := strings.Split(content, "\n")
-			for _, line := range lines {
-				lineLen := float64(len(line))
-				if lineLen > maxLineLength {
-					maxLineLength = lineLen
-				}
-				totalChars += lineLen
-			}
-			averageLineLength = totalChars / contentLines
-
-			// Base measurements for content fitting at scale 1.0:
-			const (
-				targetWidth    = 830.0 // Target width that worked well
-				charsPerLine   = 100.0 // Approximate chars that fit in target width
-				linesPerHeight = 40.0  // Lines that fit in 1200 height units
-				baseScale      = 0.37  // Base scale for full-size notes
-				minWidth       = 300.0 // Minimum width for very short content
-			)
-
-			isFormattedText := averageLineLength < (charsPerLine*0.5) && contentLines > 5
-
-			var width float64
-			if isFormattedText {
-				width = math.Max(minWidth, (maxLineLength/charsPerLine)*targetWidth)
-			} else {
-				width = targetWidth
-			}
-
-			totalLines := contentLines
-			if !isFormattedText {
-				totalLines += (maxLineLength / charsPerLine)
-			}
-			height := (totalLines / linesPerHeight) * 1200.0
-
-			contentRatio := math.Min(1.0, math.Max(width/targetWidth, height/1200.0))
-			scale = baseScale * (1.0 + (1.0 - contentRatio))
-
-			const maxScale = 1.0
-			scale = math.Min(maxScale, scale*2)
-
-			size = map[string]interface{}{
-				"width":  width,
-				"height": height,
-			}
-
-			log.Debug("content sizing calculated",
-				zap.Float64("content_lines", contentLines),
-				zap.Float64("avg_line_len", averageLineLength),
-				zap.Float64("max_chars", maxLineLength),
-				zap.Bool("formatted", isFormattedText),
-				zap.Float64("width", width),
-				zap.Float64("height", height),
-				zap.Float64("scale", scale))
-		}
+		noteSize, scale = handlers.CalculateNoteSize(content, originalSize.Width, originalSize.Height, originalScale)
+		log.Debug("content sizing calculated",
+			zap.Float64("width", noteSize.Width),
+			zap.Float64("height", noteSize.Height),
+			zap.Float64("scale", scale))
 	}
 
-	// Get background color with fallback
-	backgroundColor := "#FFFFFFBF" // Default white with 75% opacity
-	if bgColor, ok := triggeringUpdate["background_color"].(string); ok {
-		if len(bgColor) == 9 { // #RRGGBBAA format
-			// Extract the alpha value and reduce it by 25%
-			baseColor := bgColor[:7]
-			alpha, _ := strconv.ParseInt(bgColor[7:], 16, 0)
-			newAlpha := fmt.Sprintf("%02X", int(float64(alpha)/1.15)) // Reduces by ~25%
-			backgroundColor = baseColor + newAlpha
-		} else if len(bgColor) == 7 { // #RRGGBB format
-			backgroundColor = bgColor + "BF" // Add 75% opacity
-		} else {
-			backgroundColor = bgColor // Keep original if format unknown
-		}
-	}
+	// Calculate background color and depth using atoms
+	bgColor, _ := triggeringUpdate["background_color"].(string)
+	backgroundColor := handlers.ReduceBackgroundOpacity(bgColor)
+	originalDepth, _ := triggeringUpdate["depth"].(float64)
+	depth := handlers.CalculateDepthOffset(originalDepth, 200)
 
-	// Get depth with fallback
-	depth := 0.0
-	if d, ok := triggeringUpdate["depth"].(float64); ok {
-		depth = d + 200
-	}
+	// Build and send creation payload
+	payload := buildResponseNotePayload(content, triggeringNoteID, triggeringUpdate, noteSize, scale, backgroundColor, depth)
+	logNoteCreation(log, triggeringUpdate, noteSize, scale)
 
-	// Prepare the creation payload
-	payload := map[string]interface{}{
+	if _, err := client.CreateNote(payload); err != nil {
+		log.Error("failed to create note", zap.Error(err))
+		return err
+	}
+	return nil
+}
+
+// buildResponseNotePayload constructs the payload for creating a response note.
+func buildResponseNotePayload(content, triggeringNoteID string, triggeringUpdate Update, size handlers.NoteSize, scale float64, backgroundColor string, depth float64) map[string]interface{} {
+	return map[string]interface{}{
 		"title":            fmt.Sprintf("Response to Note %s", triggeringNoteID),
 		"text":             content,
 		"location":         triggeringUpdate["location"],
-		"size":             size,
+		"size":             handlers.SizeToMap(size),
 		"depth":            depth,
 		"scale":            scale,
 		"background_color": backgroundColor,
 		"auto_text_color":  false,
-		"text_color":       "#000000ff", // Solid black text
+		"text_color":       "#000000ff",
 	}
+}
 
-	// Log creation details
-	loc := triggeringUpdate["location"].(map[string]interface{})
+// logNoteCreation logs details about the note being created.
+func logNoteCreation(log *logging.Logger, triggeringUpdate Update, size handlers.NoteSize, scale float64) {
+	loc := handlers.ExtractLocation(triggeringUpdate["location"].(map[string]interface{}))
 	log.Info("creating response note",
-		zap.Float64("x", loc["x"].(float64)),
-		zap.Float64("y", loc["y"].(float64)),
-		zap.Float64("width", size["width"].(float64)),
-		zap.Float64("height", size["height"].(float64)),
+		zap.Float64("x", loc.X),
+		zap.Float64("y", loc.Y),
+		zap.Float64("width", size.Width),
+		zap.Float64("height", size.Height),
 		zap.Float64("scale", scale))
-
-	// Create the new Note
-	_, err := client.CreateNote(payload)
-	if err != nil {
-		log.Error("failed to create note", zap.Error(err))
-		return err
-	}
-
-	return nil
 }
 
 // isAzureOpenAIEndpoint checks if the endpoint is an Azure OpenAI endpoint
