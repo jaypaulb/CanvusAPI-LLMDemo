@@ -39,6 +39,16 @@ const (
 	// Google Vision API constants
 	visionAPIEndpoint = "https://vision.googleapis.com/v1/images:annotate"
 	visionFeatureType = "DOCUMENT_TEXT_DETECTION"
+
+	// AI Note System Message - instructs the AI on how to respond to note triggers
+	noteSystemMessage = `You are an assistant capable of interpreting structured text triggers from a Note widget. ` +
+		`Evaluate whether the content in the Note is better suited for generating text or creating an image. ` +
+		`If generating text, respond with a JSON object like: {"type": "text", "content": "..."}. ` +
+		`If creating an image, respond with a JSON object like: {"type": "image", "content": "..."}. ` +
+		`For image requests, you must craft a vivid, imaginative, and highly detailed prompt for an AI image generator. ` +
+		`Do NOT simply repeat or rephrase the user's input. Instead, expand it into a unique, creative, and visually rich scene, including style, mood, composition, and any relevant artistic details. ` +
+		`The response should be rich and meaningful. Never just a repeat of the user's input. ` +
+		`Do not include any additional text or explanations.`
 )
 
 // Core types and configuration
@@ -152,195 +162,175 @@ func recordProcessingHistory(
 
 // handleNote processes Note widget updates
 func handleNote(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
-	correlationID := generateCorrelationID()
 	noteID, _ := update["id"].(string)
-
-	// Create a logger with widget context
 	log := logger.With(
-		zap.String("correlation_id", correlationID),
+		zap.String("correlation_id", generateCorrelationID()),
 		zap.String("widget_id", noteID),
 		zap.String("widget_type", "Note"),
 	)
 
+	// Validate and check for AI trigger
 	if err := handlers.ValidateUpdate(update); err != nil {
 		log.Error("invalid update", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
-
-	// Check for AI trigger
 	noteText, ok := update["text"].(string)
-	if !ok {
+	if !ok || !hasAITrigger(noteText) {
 		return
 	}
 
-	// Only process if there's an AI trigger
-	if !strings.Contains(noteText, "{{") || !strings.Contains(noteText, "}}") {
-		return
+	// Initialize processing context
+	npc := &noteProcessingContext{
+		correlationID: generateCorrelationID(),
+		noteID:        noteID,
+		baseText:      extractAIPrompt(noteText),
+		aiPrompt:      extractAIPrompt(noteText),
+		start:         time.Now(),
+		client:        client,
+		config:        config,
+		log:           log,
+		repo:          repo,
+		update:        update,
 	}
+	log.Info("processing AI trigger", zap.String("text_preview", truncateText(noteText, 30)))
 
-	start := time.Now()
-	log.Info("processing AI trigger",
-		zap.String("text_preview", truncateText(noteText, 30)))
-
-	// Immediately mark as processing - highest priority
-	processingText := strings.ReplaceAll(
-		strings.ReplaceAll(noteText, "{{", ""),
-		"}}", "",
-	)
-	baseText := processingText // Store original text without status
-
-	err := updateNoteWithRetry(client, noteID, map[string]interface{}{
-		"text": baseText + "\n\n processing...",
-	}, config, log)
-	if err != nil {
+	// Mark as processing
+	if err := updateNoteWithRetry(client, noteID, map[string]interface{}{
+		"text": npc.baseText + "\n\n processing...",
+	}, config, log); err != nil {
 		log.Error("failed to mark note as processing", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
 
-	// Create context with timeout for AI processing
+	// Setup context and update status
 	ctx, cancel := context.WithTimeout(context.Background(), config.AITimeout)
 	defer cancel()
+	npc.ctx = ctx
+	updateNoteWithRetry(client, noteID, map[string]interface{}{"text": npc.baseText + "\n\n Analyzing request..."}, config, log)
 
-	// Update note to show we're analyzing the request
-	updateNoteWithRetry(client, noteID, map[string]interface{}{
-		"text": baseText + "\n\n Analyzing request...",
-	}, config, log)
-
-	// Generate the AI response
-	systemMessage := "You are an assistant capable of interpreting structured text triggers from a Note widget. " +
-		"Evaluate whether the content in the Note is better suited for generating text or creating an image. " +
-		"If generating text, respond with a JSON object like: {\"type\": \"text\", \"content\": \"...\"}. " +
-		"If creating an image, respond with a JSON object like: {\"type\": \"image\", \"content\": \"...\"}. " +
-		"For image requests, you must craft a vivid, imaginative, and highly detailed prompt for an AI image generator. " +
-		"Do NOT simply repeat or rephrase the user's input. Instead, expand it into a unique, creative, and visually rich scene, including style, mood, composition, and any relevant artistic details. " +
-		"The response should be rich and meaningful. Never just a repeat of the user's input. " +
-		"Do not include any additional text or explanations."
-
-	aiPrompt := strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
-	log.Debug("sending prompt to AI",
-		zap.String("prompt_preview", truncateText(aiPrompt, 50)))
-
-	// Create metrics logger for inference tracking
+	// Generate AI response
 	metricsLogger := logging.NewMetricsLogger(log)
 	inferenceTimer := metricsLogger.StartInference(config.OpenAINoteModel)
-
-	rawResponse, err := generateAIResponse(aiPrompt, config, systemMessage, log)
+	rawResponse, err := generateAIResponse(npc.aiPrompt, config, noteSystemMessage, log)
 	if err != nil {
-		// End inference with error (0 tokens)
-		// Record failed processing to database
-		recordProcessingHistory(
-			ctx,
-			repo,
-			correlationID,
-			config.CanvasID,
-			noteID,
-			"text_generation",
-			aiPrompt,
-			"",
-			config.OpenAINoteModel,
-			len(aiPrompt)/4,
-			0,
-			int(time.Since(start).Milliseconds()),
-			"error",
-			err.Error(),
-			log,
-		)
+		recordNoteError(npc, err)
 		metricsLogger.EndInference(inferenceTimer, 0, 0)
-		if err := handleAIError(ctx, client, update, err, baseText, config, log); err != nil {
+		if err := handleAIError(ctx, client, update, err, npc.baseText, config, log); err != nil {
 			log.Error("failed to create error note", zap.Error(err))
 		}
-		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
 
-	// Estimate tokens for logging (rough approximation)
-	promptTokens := len(aiPrompt) / 4
-	completionTokens := len(rawResponse) / 4
+	promptTokens, completionTokens := len(npc.aiPrompt)/4, len(rawResponse)/4
 	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
+	log.Debug("received AI response", zap.String("response_preview", truncateText(rawResponse, 50)))
 
-	log.Debug("received AI response",
-		zap.String("response_preview", truncateText(rawResponse, 50)))
-
-	// Parse the AI response
+	// Parse and process AI response
 	var aiNoteResponse AINoteResponse
 	if err := json.Unmarshal([]byte(rawResponse), &aiNoteResponse); err != nil {
-		if err := handleAIError(ctx, client, update, err, baseText, config, log); err != nil {
+		if err := handleAIError(ctx, client, update, err, npc.baseText, config, log); err != nil {
 			log.Error("failed to create error note", zap.Error(err))
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		return
 	}
 
-	// Process the AI response based on type
-	var creationErr error
-	switch aiNoteResponse.Type {
-	case "text":
-		updateNoteWithRetry(client, noteID, map[string]interface{}{
-			"text": baseText + "\n\n Generating text response...",
-		}, config, log)
-		log.Info("creating text response")
-		// Convert escaped newlines to actual newlines
-		content := strings.ReplaceAll(aiNoteResponse.Content, "\\n", "\n")
-		creationErr = createNoteFromResponse(content, noteID, update, false, client, config, log)
-
-	case "image":
-		// For image generation, provide more detailed progress updates
-		updateNoteWithRetry(client, noteID, map[string]interface{}{
-			"text": baseText + "\n\n Generating image...\nThis may take up to 30 seconds.",
-		}, config, log)
-		log.Info("creating image response")
-
-		creationErr = processAIImage(ctx, client, aiNoteResponse.Content, update, config, log)
-
-	default:
-		log.Error("unexpected AI response type",
-			zap.String("response_type", aiNoteResponse.Type))
-		creationErr = fmt.Errorf("unexpected response type: %s", aiNoteResponse.Type)
-	}
-
-	if creationErr != nil {
-		log.Error("failed to create response widget", zap.Error(creationErr))
-		atomic.AddInt64(&handlerMetrics.errors, 1)
-		// Create a new note with the error details
-		errorContent := fmt.Sprintf("# AI Image Generation Error\n\n Failed to generate image for your request.\n\n**Error Details:** %v", creationErr)
-		createNoteFromResponse(errorContent, noteID, update, true, client, config, log)
-		// Clear the processing status from the original note
-		clearProcessingStatus(client, noteID, baseText, config, log)
+	if err := processAIResponseType(npc, aiNoteResponse); err != nil {
+		handleNoteCreationError(npc, err)
 		return
 	}
 
-	// Clear the processing status
-	clearProcessingStatus(client, noteID, baseText, config, log)
+	// Success path
+	clearProcessingStatus(client, noteID, npc.baseText, config, log)
+	recordNoteSuccess(npc, rawResponse, promptTokens, completionTokens)
+	log.Info("completed processing note", zap.Duration("duration", time.Since(npc.start)))
+}
 
+// noteProcessingContext holds shared state for note AI processing.
+// This reduces parameter passing between helper functions.
+type noteProcessingContext struct {
+	ctx           context.Context
+	correlationID string
+	noteID        string
+	baseText      string
+	aiPrompt      string
+	start         time.Time
+	client        *canvusapi.Client
+	config        *core.Config
+	log           *logging.Logger
+	repo          *db.Repository
+	update        Update
+}
 
-	// Record successful processing to database
+// extractAIPrompt extracts the prompt text from a note, removing the {{ }} markers.
+func extractAIPrompt(noteText string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
+}
+
+// hasAITrigger checks if the note text contains an AI trigger ({{ }}).
+func hasAITrigger(text string) bool {
+	return strings.Contains(text, "{{") && strings.Contains(text, "}}")
+}
+
+// processAIResponseType handles the AI response based on its type (text or image).
+// Returns an error if response processing fails.
+func processAIResponseType(npc *noteProcessingContext, response AINoteResponse) error {
+	switch response.Type {
+	case "text":
+		updateNoteWithRetry(npc.client, npc.noteID, map[string]interface{}{
+			"text": npc.baseText + "\n\n Generating text response...",
+		}, npc.config, npc.log)
+		npc.log.Info("creating text response")
+		content := strings.ReplaceAll(response.Content, "\\n", "\n")
+		return createNoteFromResponse(content, npc.noteID, npc.update, false, npc.client, npc.config, npc.log)
+
+	case "image":
+		updateNoteWithRetry(npc.client, npc.noteID, map[string]interface{}{
+			"text": npc.baseText + "\n\n Generating image...\nThis may take up to 30 seconds.",
+		}, npc.config, npc.log)
+		npc.log.Info("creating image response")
+		return processAIImage(npc.ctx, npc.client, response.Content, npc.update, npc.config, npc.log)
+
+	default:
+		npc.log.Error("unexpected AI response type", zap.String("response_type", response.Type))
+		return fmt.Errorf("unexpected response type: %s", response.Type)
+	}
+}
+
+// recordNoteSuccess records successful note processing to the database and updates metrics.
+func recordNoteSuccess(npc *noteProcessingContext, rawResponse string, promptTokens, completionTokens int) {
 	recordProcessingHistory(
-		ctx,
-		repo,
-		correlationID,
-		config.CanvasID,
-		noteID,
-		"text_generation",
-		aiPrompt,
-		rawResponse,
-		config.OpenAINoteModel,
-		promptTokens,
-		completionTokens,
-		int(time.Since(start).Milliseconds()),
-		"success",
-		"",
-		log,
+		npc.ctx, npc.repo, npc.correlationID, npc.config.CanvasID, npc.noteID,
+		"text_generation", npc.aiPrompt, rawResponse, npc.config.OpenAINoteModel,
+		promptTokens, completionTokens, int(time.Since(npc.start).Milliseconds()),
+		"success", "", npc.log,
 	)
-	// Update metrics
 	atomic.AddInt64(&handlerMetrics.processedNotes, 1)
 	metricsMutex.Lock()
-	handlerMetrics.processingDuration += time.Since(start)
+	handlerMetrics.processingDuration += time.Since(npc.start)
 	metricsMutex.Unlock()
+}
 
-	log.Info("completed processing note",
-		zap.Duration("duration", time.Since(start)))
+// recordNoteError records failed note processing to the database.
+func recordNoteError(npc *noteProcessingContext, err error) {
+	recordProcessingHistory(
+		npc.ctx, npc.repo, npc.correlationID, npc.config.CanvasID, npc.noteID,
+		"text_generation", npc.aiPrompt, "", npc.config.OpenAINoteModel,
+		len(npc.aiPrompt)/4, 0, int(time.Since(npc.start).Milliseconds()),
+		"error", err.Error(), npc.log,
+	)
+	atomic.AddInt64(&handlerMetrics.errors, 1)
+}
+
+// handleNoteCreationError handles errors that occur during note response creation.
+func handleNoteCreationError(npc *noteProcessingContext, err error) {
+	npc.log.Error("failed to create response widget", zap.Error(err))
+	atomic.AddInt64(&handlerMetrics.errors, 1)
+	errorContent := fmt.Sprintf("# AI Image Generation Error\n\n Failed to generate image for your request.\n\n**Error Details:** %v", err)
+	createNoteFromResponse(errorContent, npc.noteID, npc.update, true, npc.client, npc.config, npc.log)
+	clearProcessingStatus(npc.client, npc.noteID, npc.baseText, npc.config, npc.log)
 }
 
 // updateNoteWithRetry attempts to update a note with retries
