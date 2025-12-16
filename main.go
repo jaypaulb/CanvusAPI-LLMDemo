@@ -2,17 +2,38 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/imagegen"
 	"go_backend/logging"
+	"go_backend/sdruntime"
+	"go_backend/webui/auth"
 
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
+)
+
+// Default timeouts for the HTTP server
+const (
+	// DefaultReadTimeout is the maximum duration for reading the entire request.
+	DefaultReadTimeout = 15 * time.Second
+
+	// DefaultWriteTimeout is the maximum duration before timing out writes of the response.
+	DefaultWriteTimeout = 15 * time.Second
+
+	// DefaultIdleTimeout is the maximum amount of time to wait for the next request.
+	DefaultIdleTimeout = 60 * time.Second
+
+	// DefaultShutdownTimeout is the maximum time to wait for server shutdown.
+	DefaultShutdownTimeout = 10 * time.Second
 )
 
 func main() {
@@ -62,6 +83,7 @@ func main() {
 		zap.String("downloads_dir", config.DownloadsDir),
 		zap.Bool("allow_self_signed_certs", config.AllowSelfSignedCerts),
 		zap.Bool("dev_mode", isDevelopment),
+		zap.Int("webui_port", config.Port),
 	)
 
 	// Create downloads directory
@@ -76,6 +98,26 @@ func main() {
 		config.CanvusAPIKey,
 		config.AllowSelfSignedCerts,
 	)
+
+	// Initialize SD runtime and imagegen processor (optional)
+	var sdPool *sdruntime.ContextPool
+	var imageProcessor *imagegen.Processor
+
+	sdPool, imageProcessor, err = initializeSDRuntime(logger, client, config)
+	if err != nil {
+		// Log the error but continue - SD is optional
+		logger.Warn("SD runtime initialization failed, image generation disabled",
+			zap.Error(err))
+	} else if sdPool != nil {
+		// Ensure graceful shutdown of SD pool
+		defer func() {
+			logger.Info("Shutting down SD context pool...")
+			if closeErr := sdPool.Close(); closeErr != nil {
+				logger.Error("Failed to close SD pool", zap.Error(closeErr))
+			}
+			logger.Info("SD context pool closed")
+		}()
+	}
 
 	// Create context that can be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,11 +134,317 @@ func main() {
 
 	// Start monitoring with context
 	monitor := NewMonitor(client, config, logger)
+
+	// Wire in the imagegen processor if available
+	if imageProcessor != nil {
+		monitor.SetImagegenProcessor(imageProcessor)
+		logger.Info("Image generation enabled via SD runtime")
+	}
+
 	go monitor.Start(ctx)
 
-	// Block until context is cancelled
-	<-ctx.Done()
+	// Initialize and start web UI server
+	httpServer, err := setupWebServer(config, logger)
+	if err != nil {
+		logger.Fatal("Failed to setup web server", zap.Error(err))
+	}
+
+	// Start web server in a goroutine
+	serverErrChan := make(chan error, 1)
+	go func() {
+		logger.Info("Starting web UI server",
+			zap.Int("port", config.Port),
+			zap.String("login_url", fmt.Sprintf("http://localhost:%d/login", config.Port)),
+		)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErrChan <- err
+		}
+	}()
+
+	// Wait for shutdown signal or server error
+	select {
+	case <-ctx.Done():
+		// Gracefully shutdown the HTTP server
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
+		defer shutdownCancel()
+
+		logger.Info("Shutting down web server...")
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("Web server shutdown error", zap.Error(err))
+		} else {
+			logger.Info("Web server shutdown complete")
+		}
+	case err := <-serverErrChan:
+		logger.Error("Web server error", zap.Error(err))
+		cancel() // Trigger shutdown of other components
+	}
+
 	logger.Info("Goodbye!")
+}
+
+// setupWebServer creates and configures the HTTP server with authentication.
+// This function:
+//  1. Initializes the AuthMiddleware with WEBUI_PWD
+//  2. Registers /login and /logout routes
+//  3. Wraps protected routes (/, /api/*) with auth middleware
+//
+// Returns the configured http.Server and any initialization error.
+func setupWebServer(config *core.Config, logger *logging.Logger) (*http.Server, error) {
+	// Initialize authentication middleware with password from config
+	authMiddleware, err := auth.NewAuthMiddleware(config.WebUIPassword, logger.Zap())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auth middleware: %w", err)
+	}
+
+	logger.Info("Auth middleware initialized")
+
+	// Create HTTP mux for routing
+	mux := http.NewServeMux()
+
+	// Register public routes (no authentication required)
+	// Login handler handles both GET (render form) and POST (authenticate)
+	mux.HandleFunc("/login", auth.LoginHandler(authMiddleware))
+
+	// Logout handler clears session and redirects to login
+	mux.HandleFunc("/logout", auth.LogoutHandler(authMiddleware))
+
+	// Register protected routes (require authentication)
+	// Root redirects to dashboard or serves dashboard page
+	mux.Handle("/", authMiddleware.Middleware(http.HandlerFunc(dashboardHandler)))
+
+	// API endpoints - all protected by auth middleware
+	mux.Handle("/api/status", authMiddleware.Middleware(http.HandlerFunc(apiStatusHandler)))
+	mux.Handle("/api/canvases", authMiddleware.Middleware(http.HandlerFunc(apiCanvasesHandler)))
+	mux.Handle("/api/tasks", authMiddleware.Middleware(http.HandlerFunc(apiTasksHandler)))
+	mux.Handle("/api/metrics", authMiddleware.Middleware(http.HandlerFunc(apiMetricsHandler)))
+	mux.Handle("/api/gpu", authMiddleware.Middleware(http.HandlerFunc(apiGPUHandler)))
+
+	// Create HTTP server with timeouts
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", config.Port),
+		Handler:      mux,
+		ReadTimeout:  DefaultReadTimeout,
+		WriteTimeout: DefaultWriteTimeout,
+		IdleTimeout:  DefaultIdleTimeout,
+	}
+
+	return server, nil
+}
+
+// dashboardHandler serves the main dashboard page.
+// This is a placeholder that will be replaced with the full dashboard implementation.
+func dashboardHandler(w http.ResponseWriter, r *http.Request) {
+	// Only handle requests for the root path exactly
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CanvusLocalLLM - Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            text-align: center;
+            padding: 48px;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        p {
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 2rem;
+        }
+        .status {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 16px 24px;
+            display: inline-block;
+            margin-bottom: 2rem;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: #22c55e;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .logout-link {
+            color: #60a5fa;
+            text-decoration: none;
+            padding: 8px 16px;
+            border: 1px solid rgba(96, 165, 250, 0.5);
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        .logout-link:hover {
+            background: rgba(96, 165, 250, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CanvusLocalLLM Dashboard</h1>
+        <p>Real-time monitoring dashboard</p>
+        <div class="status">
+            <span class="status-indicator"></span>
+            System Running
+        </div>
+        <p>Full dashboard coming soon...</p>
+        <a href="/logout" class="logout-link">Logout</a>
+    </div>
+</body>
+</html>`)
+}
+
+// apiStatusHandler returns the current system status.
+// Placeholder implementation - will be replaced with real metrics.
+func apiStatusHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"status":"running","version":"1.0.0"}`)
+}
+
+// apiCanvasesHandler returns the list of monitored canvases.
+// Placeholder implementation - will be replaced with real data.
+func apiCanvasesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"canvases":[]}`)
+}
+
+// apiTasksHandler returns recent AI processing tasks.
+// Placeholder implementation - will be replaced with real data.
+func apiTasksHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"tasks":[]}`)
+}
+
+// apiMetricsHandler returns aggregated metrics.
+// Placeholder implementation - will be replaced with real data.
+func apiMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"metrics":{}}`)
+}
+
+// apiGPUHandler returns GPU utilization stats.
+// Placeholder implementation - will be replaced with real data.
+func apiGPUHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"gpu":{"available":false}}`)
+}
+
+// initializeSDRuntime initializes the Stable Diffusion runtime and image processor.
+// Returns (nil, nil, nil) if SD is not configured (no model path).
+// Returns (nil, nil, error) if SD is configured but initialization fails.
+// Returns (pool, processor, nil) on success.
+//
+// This is a molecule that composes:
+//   - sdruntime.LoadSDConfig (atom)
+//   - sdruntime.VerifyModelChecksum (molecule)
+//   - sdruntime.NewContextPool (molecule)
+//   - imagegen.NewProcessor (organism)
+func initializeSDRuntime(logger *logging.Logger, client *canvusapi.Client, config *core.Config) (*sdruntime.ContextPool, *imagegen.Processor, error) {
+	// Load SD configuration
+	sdConfig := sdruntime.LoadSDConfig()
+
+	// Check if SD is configured
+	if sdConfig.ModelPath == "" {
+		logger.Info("SD model path not configured, image generation disabled")
+		return nil, nil, nil
+	}
+
+	logger.Info("Initializing SD runtime",
+		zap.String("model_path", sdConfig.ModelPath),
+		zap.Int("max_concurrent", sdConfig.MaxConcurrent),
+		zap.Int("image_size", sdConfig.ImageSize),
+		zap.Int("inference_steps", sdConfig.InferenceSteps),
+		zap.Float64("guidance_scale", sdConfig.GuidanceScale),
+		zap.Duration("timeout", sdConfig.Timeout),
+	)
+
+	// Verify model exists
+	if _, err := os.Stat(sdConfig.ModelPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("SD model file not found: %s", sdConfig.ModelPath)
+		}
+		return nil, nil, fmt.Errorf("failed to access SD model file: %w", err)
+	}
+
+	// Verify model integrity (optional - only if checksum is registered)
+	if err := sdruntime.VerifyModelChecksum(sdConfig.ModelPath); err != nil {
+		if errors.Is(err, sdruntime.ErrModelCorrupted) {
+			return nil, nil, fmt.Errorf("SD model file corrupted: %w", err)
+		}
+		// Log warning for other errors but continue
+		logger.Warn("SD model checksum verification skipped",
+			zap.Error(err))
+	} else {
+		logger.Info("SD model checksum verified")
+	}
+
+	// Create context pool
+	pool, err := sdruntime.NewContextPool(sdConfig.MaxConcurrent, sdConfig.ModelPath)
+	if err != nil {
+		if errors.Is(err, sdruntime.ErrCUDANotAvailable) {
+			return nil, nil, fmt.Errorf("CUDA not available for SD: %w", err)
+		}
+		return nil, nil, fmt.Errorf("failed to create SD context pool: %w", err)
+	}
+
+	logger.Info("SD context pool created",
+		zap.Int("max_size", pool.MaxSize()))
+
+	// Create imagegen processor
+	processorConfig := imagegen.ProcessorConfig{
+		DownloadsDir:    config.DownloadsDir,
+		DefaultWidth:    sdConfig.ImageSize,
+		DefaultHeight:   sdConfig.ImageSize,
+		DefaultSteps:    sdConfig.InferenceSteps,
+		DefaultCFGScale: sdConfig.GuidanceScale,
+		PlacementConfig: imagegen.DefaultPlacementConfig(),
+		ProcessingNote:  imagegen.DefaultProcessingNoteConfig(),
+	}
+
+	processor, err := imagegen.NewProcessor(pool, client, logger, processorConfig)
+	if err != nil {
+		// Clean up the pool if processor creation fails
+		pool.Close()
+		return nil, nil, fmt.Errorf("failed to create image processor: %w", err)
+	}
+
+	logger.Info("Image generation processor initialized")
+
+	return pool, processor, nil
 }
 
 // runStartupValidation performs comprehensive startup validation.
