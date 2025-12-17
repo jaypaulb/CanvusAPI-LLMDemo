@@ -1,0 +1,260 @@
+// Package llamaruntime provides Go bindings to llama.cpp for local LLM inference.
+// This file contains stub implementations for testing without llama.cpp.
+//
+// Build Tags:
+// - nocgo: Enable this file when CGo is disabled or llama.cpp is unavailable
+// - !cgo: Also enable when CGo is not available
+//
+// Usage:
+//   go test -tags nocgo ./llamaruntime/...
+//   go build -tags nocgo .
+//
+//go:build nocgo || !cgo
+
+package llamaruntime
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// llamaBackend manages global llama.cpp initialization state.
+var (
+	llamaBackendOnce sync.Once
+	llamaBackendInit bool
+)
+
+// llamaInit initializes the llama.cpp backend (stub).
+func llamaInit() {
+	llamaBackendOnce.Do(func() {
+		llamaBackendInit = true
+	})
+}
+
+// llamaBackendFree releases global llama.cpp resources (stub).
+func llamaBackendFree() {
+	if llamaBackendInit {
+		llamaBackendInit = false
+		llamaBackendOnce = sync.Once{}
+	}
+}
+
+// llamaModel wraps a model pointer (stub).
+type llamaModel struct {
+	path string
+	mu   sync.Mutex
+}
+
+// loadModel loads a GGUF model (stub).
+func loadModel(path string, numGPULayers int, useMMap bool, useMlock bool) (*llamaModel, error) {
+	llamaInit()
+
+	// In stub mode, we just validate the path is non-empty
+	if path == "" {
+		return nil, &LlamaError{
+			Op:      "loadModel",
+			Code:    -1,
+			Message: "model path is empty",
+			Err:     ErrModelNotFound,
+		}
+	}
+
+	return &llamaModel{path: path}, nil
+}
+
+// VocabSize returns the vocabulary size (stub: returns placeholder).
+func (m *llamaModel) VocabSize() int {
+	return 32000 // Typical LLaMA vocab size
+}
+
+// ContextTrainSize returns the training context size (stub).
+func (m *llamaModel) ContextTrainSize() int {
+	return 4096
+}
+
+// EmbeddingSize returns the embedding dimension (stub).
+func (m *llamaModel) EmbeddingSize() int {
+	return 4096
+}
+
+// BOSToken returns the beginning-of-sequence token ID (stub).
+func (m *llamaModel) BOSToken() int {
+	return 1
+}
+
+// EOSToken returns the end-of-sequence token ID (stub).
+func (m *llamaModel) EOSToken() int {
+	return 2
+}
+
+// Close releases the model resources (stub).
+func (m *llamaModel) Close() {
+	// Nothing to do in stub mode
+}
+
+// llamaContext wraps a context pointer (stub).
+type llamaContext struct {
+	model       *llamaModel
+	contextSize int
+	mu          sync.Mutex
+}
+
+// createContext creates an inference context (stub).
+func createContext(model *llamaModel, contextSize, batchSize, numThreads int) (*llamaContext, error) {
+	if model == nil {
+		return nil, &LlamaError{
+			Op:      "createContext",
+			Code:    -1,
+			Message: "invalid model (nil)",
+		}
+	}
+
+	return &llamaContext{
+		model:       model,
+		contextSize: contextSize,
+	}, nil
+}
+
+// ContextSize returns the context window size (stub).
+func (c *llamaContext) ContextSize() int {
+	return c.contextSize
+}
+
+// ClearKVCache clears the key-value cache (stub).
+func (c *llamaContext) ClearKVCache() {
+	// Nothing to do in stub mode
+}
+
+// Close releases the context resources (stub).
+func (c *llamaContext) Close() {
+	// Nothing to do in stub mode
+}
+
+// SamplingParams contains parameters for text generation.
+type SamplingParams struct {
+	Temperature   float32
+	TopK          int
+	TopP          float32
+	RepeatPenalty float32
+	Seed          uint32
+}
+
+// DefaultSamplingParams returns default sampling parameters.
+func DefaultSamplingParams() SamplingParams {
+	return SamplingParams{
+		Temperature:   DefaultTemperature,
+		TopK:          DefaultTopK,
+		TopP:          DefaultTopP,
+		RepeatPenalty: DefaultRepeatPenalty,
+		Seed:          0,
+	}
+}
+
+// configureSampler sets up the sampler chain (stub).
+func (c *llamaContext) configureSampler(params SamplingParams) {
+	// Nothing to do in stub mode
+}
+
+// tokenize converts text to tokens (stub: simple word split).
+func tokenize(model *llamaModel, text string, addBOS bool) ([]int32, error) {
+	if model == nil {
+		return nil, &LlamaError{
+			Op:      "tokenize",
+			Code:    -1,
+			Message: "invalid model (nil)",
+		}
+	}
+
+	// Simple approximation: ~4 chars per token
+	nTokens := len(text)/4 + 1
+	if addBOS {
+		nTokens++
+	}
+
+	tokens := make([]int32, nTokens)
+	return tokens, nil
+}
+
+// detokenize converts a token to text (stub).
+func detokenize(model *llamaModel, token int32) string {
+	return "stub"
+}
+
+// inferText performs text inference (stub: returns mock response).
+func inferText(ctx context.Context, llamaCtx *llamaContext, prompt string, maxTokens int, params SamplingParams) (string, error) {
+	if llamaCtx == nil {
+		return "", &LlamaError{
+			Op:      "inferText",
+			Code:    -1,
+			Message: "invalid context (nil)",
+		}
+	}
+
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	// Return a stub response for testing
+	return fmt.Sprintf("[Stub Response to: %s] This is a mock response from the stub llama.cpp bindings. In production, this would be generated by the actual model.", truncateForStub(prompt, 50)), nil
+}
+
+// truncateForStub truncates a string for stub responses.
+func truncateForStub(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// inferVision performs multimodal inference (stub).
+func inferVision(ctx context.Context, llamaCtx *llamaContext, prompt string, imageData []byte, maxTokens int, params SamplingParams) (string, error) {
+	return "", &LlamaError{
+		Op:      "inferVision",
+		Code:    -1,
+		Message: "vision inference not implemented in stub mode",
+	}
+}
+
+// GPUMemoryInfo holds GPU memory statistics.
+type GPUMemoryInfo struct {
+	Used       int64
+	Total      int64
+	Free       int64
+	UsedPct    float64
+	LastUpdate time.Time
+}
+
+// getGPUMemory returns GPU memory usage (stub).
+func getGPUMemory() (*GPUMemoryInfo, error) {
+	return &GPUMemoryInfo{
+		Used:       4 * 1024 * 1024 * 1024,  // 4 GB used (mock)
+		Total:      12 * 1024 * 1024 * 1024, // 12 GB total (mock)
+		Free:       8 * 1024 * 1024 * 1024,  // 8 GB free (mock)
+		UsedPct:    33.3,
+		LastUpdate: time.Now(),
+	}, nil
+}
+
+// hasCUDA returns false in stub mode.
+func hasCUDA() bool {
+	return false
+}
+
+// freeContext releases context resources (stub).
+func freeContext(ctx *llamaContext) {
+	if ctx != nil {
+		ctx.Close()
+	}
+}
+
+// freeModel releases model resources (stub).
+func freeModel(model *llamaModel) {
+	if model != nil {
+		model.Close()
+	}
+}
