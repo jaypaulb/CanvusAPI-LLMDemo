@@ -24,6 +24,7 @@ package llamaruntime
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 // Forward declarations for llama.cpp types and functions
 // These must match llama.h from llama.cpp
