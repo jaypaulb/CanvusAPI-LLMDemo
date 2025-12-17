@@ -377,6 +377,30 @@ body {
     height: 120px;
 }
 
+/* GPU Chart N/A State */
+.gpu-chart-unavailable {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 120px;
+    background-color: var(--color-bg-tertiary);
+    border-radius: var(--radius-md);
+    border: 1px dashed var(--color-border);
+}
+
+.gpu-chart-na {
+    font-size: var(--font-size-xl);
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+
+.gpu-chart-reason {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--spacing-xs);
+}
+
 /* Canvas List */
 .canvas-list {
     display: flex;

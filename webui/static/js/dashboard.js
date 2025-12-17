@@ -27,10 +27,13 @@ class DashboardApp {
         this.activityLog = [];
         this.activityFilter = 'all';
 
-        // GPU chart
+        // GPU chart (Chart.js)
         this.gpuChart = null;
-        this.gpuChartData = [];
-        this.maxChartPoints = 60; // 60 seconds of data
+        this.gpuChartLabels = [];
+        this.gpuChartUtilization = [];
+        this.gpuChartMemory = [];
+        this.maxChartPoints = 720; // 1 hour at 5-second intervals (60 * 60 / 5 = 720)
+        this.gpuAvailable = false;
 
         // DOM elements (cached after init)
         this.elements = {};
@@ -400,10 +403,15 @@ class DashboardApp {
 
     renderGPU() {
         if (!this.gpuMetrics) {
+            this.gpuAvailable = false;
             this.setElementText('gpuStatusBadge', 'N/A');
             this.setElementClass('gpuStatusBadge', 'widget-badge');
+            this.showGPUChartUnavailable('No GPU detected');
             return;
         }
+
+        // Mark GPU as available
+        this.gpuAvailable = true;
 
         // Status badge
         this.setElementText('gpuStatusBadge', 'Active');
@@ -436,84 +444,242 @@ class DashboardApp {
         const powerPercent = (powerUsed / powerLimit) * 100;
         this.setElementText('gpuPower', `${powerUsed.toFixed(0)} / ${powerLimit.toFixed(0)} W`);
         this.setBarWidth('gpuPowerBar', powerPercent);
-    }
 
-    updateGPUChart() {
-        if (!this.elements.gpuChart) return;
-
-        // Add current data point
-        if (this.gpuMetrics) {
-            this.gpuChartData.push({
-                time: Date.now(),
-                utilization: this.gpuMetrics.utilization || 0,
-                memory: this.gpuMetrics.memory_used ?
-                    (this.gpuMetrics.memory_used / this.gpuMetrics.memory_total * 100) : 0
-            });
-
-            // Keep only last N points
-            if (this.gpuChartData.length > this.maxChartPoints) {
-                this.gpuChartData.shift();
-            }
+        // Load historical GPU data into chart on initial render
+        if (this.gpuHistory && this.gpuHistory.length > 0 && !this.gpuChart) {
+            this.loadGPUHistory();
         }
-
-        this.drawGPUChart();
     }
 
-    drawGPUChart() {
+    /**
+     * Initialize the Chart.js GPU chart
+     */
+    initGPUChart() {
         const canvas = this.elements.gpuChart;
         if (!canvas) return;
 
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
-
-        // Clear
-        ctx.fillStyle = '#21262d';
-        ctx.fillRect(0, 0, width, height);
-
-        if (this.gpuChartData.length < 2) return;
-
-        // Draw grid
-        ctx.strokeStyle = '#30363d';
-        ctx.lineWidth = 1;
-
-        for (let i = 0; i <= 4; i++) {
-            const y = (i / 4) * height;
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(width, y);
-            ctx.stroke();
+        // Check if Chart.js is available
+        if (typeof Chart === 'undefined') {
+            console.warn('[Dashboard] Chart.js not loaded, GPU chart unavailable');
+            this.showGPUChartUnavailable('Chart.js not loaded');
+            return;
         }
 
-        // Draw utilization line
-        const drawLine = (dataKey, color) => {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
+        const ctx = canvas.getContext('2d');
 
-            this.gpuChartData.forEach((point, index) => {
-                const x = (index / (this.gpuChartData.length - 1)) * width;
-                const y = height - (point[dataKey] / 100) * height;
-
-                if (index === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
+        this.gpuChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: this.gpuChartLabels,
+                datasets: [
+                    {
+                        label: 'Utilization %',
+                        data: this.gpuChartUtilization,
+                        borderColor: '#58a6ff',
+                        backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Memory %',
+                        data: this.gpuChartMemory,
+                        borderColor: '#3fb950',
+                        backgroundColor: 'rgba(63, 185, 80, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        pointHoverRadius: 4
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: {
+                    duration: 0 // Disable animation for real-time updates
+                },
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        align: 'start',
+                        labels: {
+                            color: '#8b949e',
+                            usePointStyle: true,
+                            pointStyle: 'line',
+                            boxWidth: 30,
+                            padding: 15,
+                            font: {
+                                size: 11,
+                                family: '-apple-system, BlinkMacSystemFont, sans-serif'
+                            }
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: '#21262d',
+                        titleColor: '#e6edf3',
+                        bodyColor: '#8b949e',
+                        borderColor: '#30363d',
+                        borderWidth: 1,
+                        padding: 10,
+                        displayColors: true,
+                        callbacks: {
+                            title: (items) => {
+                                if (items.length > 0) {
+                                    return items[0].label || '';
+                                }
+                                return '';
+                            },
+                            label: (context) => {
+                                return `${context.dataset.label}: ${context.parsed.y.toFixed(1)}%`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        display: true,
+                        grid: {
+                            color: '#21262d',
+                            lineWidth: 1
+                        },
+                        ticks: {
+                            color: '#6e7681',
+                            font: {
+                                size: 10
+                            },
+                            maxRotation: 0,
+                            autoSkip: true,
+                            maxTicksLimit: 8
+                        }
+                    },
+                    y: {
+                        display: true,
+                        min: 0,
+                        max: 100,
+                        grid: {
+                            color: '#21262d',
+                            lineWidth: 1
+                        },
+                        ticks: {
+                            color: '#6e7681',
+                            font: {
+                                size: 10
+                            },
+                            stepSize: 25,
+                            callback: (value) => `${value}%`
+                        }
+                    }
                 }
-            });
+            }
+        });
+    }
 
-            ctx.stroke();
-        };
+    /**
+     * Show N/A placeholder when GPU is unavailable
+     */
+    showGPUChartUnavailable(reason = 'GPU not available') {
+        const container = this.elements.gpuChartContainer;
+        if (!container) return;
 
-        drawLine('utilization', '#58a6ff');
-        drawLine('memory', '#3fb950');
+        container.innerHTML = `
+            <div class="gpu-chart-unavailable">
+                <span class="gpu-chart-na">N/A</span>
+                <span class="gpu-chart-reason">${this.escapeHtml(reason)}</span>
+            </div>
+        `;
+    }
 
-        // Legend
-        ctx.font = '10px -apple-system, BlinkMacSystemFont, sans-serif';
-        ctx.fillStyle = '#58a6ff';
-        ctx.fillText('Utilization', 10, 15);
-        ctx.fillStyle = '#3fb950';
-        ctx.fillText('Memory', 80, 15);
+    /**
+     * Update GPU chart with new data point
+     */
+    updateGPUChart() {
+        // Check if GPU is available
+        if (!this.gpuAvailable || !this.gpuMetrics) {
+            if (this.gpuChart) {
+                this.gpuChart.destroy();
+                this.gpuChart = null;
+            }
+            this.showGPUChartUnavailable('No GPU data available');
+            return;
+        }
+
+        // Initialize chart if needed
+        if (!this.gpuChart && this.elements.gpuChart) {
+            // Restore canvas if it was replaced with N/A message
+            const container = this.elements.gpuChartContainer;
+            if (container && !container.querySelector('#gpu-chart')) {
+                container.innerHTML = '<canvas id="gpu-chart" width="400" height="120"></canvas>';
+                this.elements.gpuChart = document.getElementById('gpu-chart');
+            }
+            this.initGPUChart();
+        }
+
+        if (!this.gpuChart) return;
+
+        // Add new data point
+        const now = new Date();
+        const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        this.gpuChartLabels.push(timeLabel);
+        this.gpuChartUtilization.push(this.gpuMetrics.utilization || 0);
+
+        // Calculate memory percentage
+        const memPercent = this.gpuMetrics.memory_used && this.gpuMetrics.memory_total
+            ? (this.gpuMetrics.memory_used / this.gpuMetrics.memory_total) * 100
+            : 0;
+        this.gpuChartMemory.push(memPercent);
+
+        // Keep only last N points (1 hour at 5-second intervals)
+        while (this.gpuChartLabels.length > this.maxChartPoints) {
+            this.gpuChartLabels.shift();
+            this.gpuChartUtilization.shift();
+            this.gpuChartMemory.shift();
+        }
+
+        // Update chart
+        this.gpuChart.update('none'); // 'none' mode for no animation
+    }
+
+    /**
+     * Load initial GPU history into chart
+     */
+    loadGPUHistory() {
+        if (!this.gpuHistory || this.gpuHistory.length === 0) return;
+
+        // Clear existing data
+        this.gpuChartLabels = [];
+        this.gpuChartUtilization = [];
+        this.gpuChartMemory = [];
+
+        // Load history (most recent last)
+        this.gpuHistory.forEach(point => {
+            const time = new Date(point.timestamp || point.time);
+            const timeLabel = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            this.gpuChartLabels.push(timeLabel);
+            this.gpuChartUtilization.push(point.utilization || 0);
+
+            const memPercent = point.memory_used && point.memory_total
+                ? (point.memory_used / point.memory_total) * 100
+                : 0;
+            this.gpuChartMemory.push(memPercent);
+        });
+
+        // Initialize chart with history
+        if (this.gpuAvailable && !this.gpuChart && this.elements.gpuChart) {
+            this.initGPUChart();
+        } else if (this.gpuChart) {
+            this.gpuChart.update('none');
+        }
     }
 
     renderQueue() {
