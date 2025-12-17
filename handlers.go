@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,11 +15,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go_backend/canvasanalyzer"
 	"go_backend/canvusapi"
 	"go_backend/core"
 	"go_backend/db"
 	"go_backend/handlers"
+	"go_backend/imagegen"
 	"go_backend/logging"
+	"go_backend/ocrprocessor"
+	"go_backend/pdfprocessor"
 
 	"github.com/google/uuid"
 	"github.com/ledongthuc/pdf"
@@ -623,14 +626,66 @@ func isAzureOpenAIEndpoint(endpoint string) bool {
 		strings.Contains(strings.ToLower(endpoint), "cognitiveservices.azure.com")
 }
 
-// processAIImage generates and uploads an image from the AI's response
+// processAIImage generates and uploads an image from the AI's response using imagegen package
 func processAIImage(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, log *logging.Logger) error {
 	downloadsMutex.Lock()
 	defer downloadsMutex.Unlock()
 
-	log.Info("generating AI image",
+	log.Info("generating AI image via imagegen",
 		zap.String("prompt_preview", truncateText(prompt, 50)))
 
+	// Check for local endpoint (not supported for cloud image generation)
+	if imagegen.IsLocalEndpoint(config.ImageLLMURL) || imagegen.IsLocalEndpoint(config.BaseLLMURL) {
+		// For local endpoints, fall back to the original implementation
+		// since imagegen.Generator is for cloud providers only
+		return processAIImageFallback(ctx, client, prompt, update, config, log)
+	}
+
+	// Create the generator using the convenience constructor
+	generator, err := imagegen.NewGeneratorFromConfig(config, client, log)
+	if err != nil {
+		log.Error("failed to create image generator", zap.Error(err))
+		return fmt.Errorf("failed to create image generator: %w", err)
+	}
+
+	// Convert Update map to ParentWidget interface
+	parentWidget := updateToParentWidget(update)
+
+	// Generate the image using the imagegen package
+	result, err := generator.Generate(ctx, prompt, parentWidget)
+	if err != nil {
+		log.Error("image generation failed", zap.Error(err))
+		return err
+	}
+
+	log.Info("image generation completed",
+		zap.String("widget_id", result.WidgetID))
+
+	return nil
+}
+
+// updateToParentWidget converts a handler Update map to an imagegen.ParentWidget
+func updateToParentWidget(update Update) imagegen.ParentWidget {
+	loc := update["location"].(map[string]interface{})
+	size := update["size"].(map[string]interface{})
+
+	return imagegen.CanvasWidget{
+		ID: update["id"].(string),
+		Location: imagegen.WidgetLocation{
+			X: loc["x"].(float64),
+			Y: loc["y"].(float64),
+		},
+		Size: imagegen.WidgetSize{
+			Width:  size["width"].(float64),
+			Height: size["height"].(float64),
+		},
+		Scale: update["scale"].(float64),
+		Depth: update["depth"].(float64),
+	}
+}
+
+// processAIImageFallback is the original implementation for local endpoints
+func processAIImageFallback(ctx context.Context, client *canvusapi.Client, prompt string, update Update, config *core.Config, log *logging.Logger) error {
 	// Ensure downloads directory exists
 	if err := os.MkdirAll(config.DownloadsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create downloads directory: %w", err)
@@ -1162,7 +1217,7 @@ func getPDFChunkPrompt() string {
 Format your response as: {"type": "text", "content": "your analysis"}`
 }
 
-// handlePDFPrecis generates a summary of a PDF widget
+// handlePDFPrecis generates a summary of a PDF widget using pdfprocessor package
 func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
 	correlationID := generateCorrelationID()
 	parentID, _ := update["parent_id"].(string)
@@ -1176,9 +1231,6 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	)
 
 	start := time.Now()
-
-	pdfConfig := *config
-	pdfConfig.OpenAINoteModel = pdfConfig.OpenAIPDFModel
 
 	parentWidget, err := client.GetWidget(parentID, false)
 	if err != nil {
@@ -1208,6 +1260,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 		triggerWidget[k] = v
 	}
 
+	// Create processing note for UI feedback
 	processingNote := map[string]interface{}{
 		"title": "PDF Analysis",
 		"text":  " Starting PDF analysis...",
@@ -1235,7 +1288,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	ctx, cancel := context.WithTimeout(context.Background(), config.ProcessingTimeout)
 	defer cancel()
 
-	// Download PDF
+	// Download PDF from Canvus
 	downloadPath := filepath.Join(config.DownloadsDir, fmt.Sprintf("temp_pdf_%s.pdf", parentID))
 	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 		"text": " Downloading PDF...",
@@ -1250,89 +1303,45 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	}
 	defer os.Remove(downloadPath)
 
-	// Extract text
-	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": " Extracting text from PDF...",
-	}, config, log)
+	// Configure and create pdfprocessor
+	processorConfig := pdfprocessor.DefaultProcessorConfig()
+	processorConfig.ChunkerConfig.MaxChunkTokens = int(config.PDFChunkSizeTokens)
+	processorConfig.SummarizerConfig.Model = config.OpenAIPDFModel
+	processorConfig.SummarizerConfig.MaxTokens = int(config.NoteResponseTokens)
 
-	pdfText, err := extractPDFText(downloadPath, log)
-	if err != nil {
-		log.Error("PDF text extraction failed", zap.Error(err))
-		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " Failed to extract text from PDF",
-		}, config, log)
-		return
+	// Create OpenAI client for the processor
+	clientConfig := openai.DefaultConfig(config.OpenAIAPIKey)
+	if config.TextLLMURL != "" {
+		clientConfig.BaseURL = config.TextLLMURL
+	} else if config.BaseLLMURL != "" {
+		clientConfig.BaseURL = config.BaseLLMURL
 	}
-
-	// Split into chunks
-	chunks := splitIntoChunks(pdfText, int(config.PDFChunkSizeTokens))
-	totalChunks := len(chunks)
-
-	log.Info("PDF chunked for analysis",
-		zap.Int("total_chunks", totalChunks))
-
-	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": fmt.Sprintf(" Preparing %d PDF sections for analysis...", totalChunks),
-	}, config, log)
-
-	// Build message history for multi-chunk protocol
-	messages := []openai.ChatCompletionMessage{
-		{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: fmt.Sprintf("You will receive %d chunks of a document. Do not respond until you receive the final chunk. After the last chunk, I will prompt you for your analysis of the entire document.", totalChunks),
-		},
-	}
-
-	for i, chunk := range chunks {
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: fmt.Sprintf("#--- chunk %d of %d ---#\n%s\n#--- end of chunk %d ---#", i+1, totalChunks, chunk, i+1),
-		})
-	}
-
-	// Final analysis prompt
-	finalPrompt := `You have now received all chunks. Please analyze the entire document and provide a summary in the following JSON format:
-{"type": "text", "content": "..."}
-The content field must be a Markdown-formatted summary with the following sections:
-# Overview
-# Key Points
-# Details
-# Conclusions
-
-Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.`
-	messages = append(messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: finalPrompt,
-	})
-
-	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-		"text": " Generating final PDF analysis...",
-	}, config, log)
-
-	clientConfig := openai.DefaultConfig(pdfConfig.OpenAIAPIKey)
-	if pdfConfig.TextLLMURL != "" {
-		clientConfig.BaseURL = pdfConfig.TextLLMURL
-	} else if pdfConfig.BaseLLMURL != "" {
-		clientConfig.BaseURL = pdfConfig.BaseLLMURL
-	}
-	// Configure HTTP client with TLS settings
 	clientConfig.HTTPClient = core.GetHTTPClient(config, config.AITimeout)
 	aiClient := openai.NewClientWithConfig(clientConfig)
 
+	// Create processor with progress callback for UI updates
+	processor := pdfprocessor.NewProcessorWithProgress(processorConfig, aiClient, func(stage string, progress float64, message string) {
+		// Update the processing note based on stage
+		statusText := fmt.Sprintf(" %s\n%.0f%% complete", message, progress*100)
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": statusText,
+		}, config, log)
+	})
+
 	// Create metrics logger for inference tracking
 	metricsLogger := logging.NewMetricsLogger(log)
-	inferenceTimer := metricsLogger.StartInference(pdfConfig.OpenAINoteModel)
+	inferenceTimer := metricsLogger.StartInference(config.OpenAIPDFModel)
 
-	resp, err := aiClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:       pdfConfig.OpenAINoteModel,
-		Messages:    messages,
-		MaxTokens:   int(pdfConfig.NoteResponseTokens),
-		Temperature: 0.3,
-	})
+	// Process the PDF using the pdfprocessor package
+	result, err := processor.Process(ctx, downloadPath)
 
 	if err != nil {
 		metricsLogger.EndInference(inferenceTimer, 0, 0)
 		// Record failed PDF processing to database
+		extractedText := ""
+		if result != nil && result.ExtractionResult != nil {
+			extractedText = result.ExtractionResult.Text
+		}
 		recordProcessingHistory(
 			ctx,
 			repo,
@@ -1340,10 +1349,10 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 			config.CanvasID,
 			update["id"].(string),
 			"pdf_analysis",
-			pdfText,
+			extractedText,
 			"",
-			pdfConfig.OpenAIPDFModel,
-			len(pdfText)/4,
+			config.OpenAIPDFModel,
+			len(extractedText)/4,
 			0,
 			int(time.Since(start).Milliseconds()),
 			"error",
@@ -1352,65 +1361,22 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 		)
 		log.Error("PDF analysis failed", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " Failed to generate PDF analysis",
+			"text": fmt.Sprintf(" Failed to analyze PDF: %v", err),
 		}, config, log)
 		return
 	}
 
-	if len(resp.Choices) == 0 {
-		metricsLogger.EndInference(inferenceTimer, 0, 0)
-		log.Error("no response choices returned from AI")
-		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " No response from AI",
-		}, config, log)
-		return
+	// Get token counts from result
+	promptTokens := 0
+	completionTokens := 0
+	if result.SummaryResult != nil {
+		promptTokens = result.SummaryResult.PromptTokens
+		completionTokens = result.SummaryResult.CompletionTokens
 	}
-
-	// Estimate tokens for logging
-	promptTokens := len(pdfText) / 4
-	completionTokens := len(resp.Choices[0].Message.Content) / 4
 	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
 
-	rawResponse := resp.Choices[0].Message.Content
-	startIdx := strings.Index(rawResponse, "{")
-	endIdx := strings.LastIndex(rawResponse, "}")
-	if startIdx == -1 || endIdx == -1 || startIdx > endIdx {
-		log.Error("response does not contain valid JSON",
-			zap.String("raw_response", truncateText(rawResponse, 100)))
-		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " AI response was not valid JSON",
-		}, config, log)
-		return
-	}
-	jsonResponse := rawResponse[startIdx : endIdx+1]
-
-	var testParse map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
-		log.Error("invalid JSON in response", zap.Error(err))
-		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " AI response was not valid JSON",
-		}, config, log)
-		return
-	}
-	if _, ok := testParse["type"].(string); !ok {
-		log.Error("response missing 'type' field")
-		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " AI response missing 'type' field",
-		}, config, log)
-		return
-	}
-	content, ok := testParse["content"].(string)
-	if !ok {
-		log.Error("response missing 'content' field")
-		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
-			"text": " AI response missing 'content' field",
-		}, config, log)
-		return
-	}
-	// Convert escaped newlines to actual newlines
-	content = strings.ReplaceAll(content, "\\n", "\n")
-
-	err = createNoteFromResponse(content, parentID, triggerWidget, false, client, config, log)
+	// Create summary note with the result
+	err = createNoteFromResponse(result.Summary, parentID, triggerWidget, false, client, config, log)
 	if err != nil {
 		log.Error("failed to create summary note", zap.Error(err))
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
@@ -1419,9 +1385,15 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 		return
 	}
 
+	// Clean up trigger widgets
 	deleteTriggeringWidget(client, "note", processingNoteID, log)
 	deleteTriggeringWidget(client, "image", update["id"].(string), log)
 
+	// Get extracted text for history
+	extractedText := ""
+	if result.ExtractionResult != nil {
+		extractedText = result.ExtractionResult.Text
+	}
 
 	// Record successful PDF processing to database
 	recordProcessingHistory(
@@ -1431,9 +1403,9 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 		config.CanvasID,
 		update["id"].(string),
 		"pdf_analysis",
-		pdfText,
-		content,
-		pdfConfig.OpenAIPDFModel,
+		extractedText,
+		result.Summary,
+		config.OpenAIPDFModel,
 		promptTokens,
 		completionTokens,
 		int(time.Since(start).Milliseconds()),
@@ -1447,7 +1419,9 @@ Respond ONLY with valid JSON as shown above, and ensure the content is Markdown.
 	metricsMutex.Unlock()
 
 	log.Info("completed PDF precis",
-		zap.Duration("duration", time.Since(start)))
+		zap.Duration("duration", time.Since(start)),
+		zap.Duration("processing_time", result.ProcessingTime),
+		zap.Int("chunks_processed", result.ChunkerResult.TotalChunks))
 }
 
 // extractPDFText extracts text content from a PDF file
@@ -1599,29 +1573,34 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 		zap.Duration("duration", time.Since(start)))
 }
 
-// fetchCanvasWidgets retrieves all widgets with retry logic
+// fetchCanvasWidgets retrieves all widgets using canvasanalyzer.Fetcher with retry logic
 func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *core.Config, log *logging.Logger) ([]map[string]interface{}, error) {
-	var widgets []map[string]interface{}
-	var lastErr error
+	// Create fetcher with configuration
+	fetcherConfig := canvasanalyzer.DefaultFetcherConfig()
+	fetcherConfig.MaxRetries = config.MaxRetries
+	fetcherConfig.RetryDelay = config.RetryDelay
 
-	for attempt := 1; attempt <= config.MaxRetries; attempt++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-			widgets, lastErr = client.GetWidgets(false)
-			if lastErr == nil {
-				return widgets, nil
-			}
-			log.Warn("attempt failed to fetch widgets",
-				zap.Int("attempt", attempt),
-				zap.Int("max_retries", config.MaxRetries),
-				zap.Error(lastErr))
-			time.Sleep(config.RetryDelay)
-		}
+	fetcher := canvasanalyzer.NewFetcher(client, fetcherConfig, log.Zap())
+
+	// Fetch widgets
+	result, err := fetcher.Fetch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch widgets: %w", err)
 	}
-	return nil, fmt.Errorf("failed to fetch widgets after %d attempts: %v",
-		config.MaxRetries, lastErr)
+
+	// Convert canvasanalyzer.Widget slice back to []map[string]interface{}
+	widgets := make([]map[string]interface{}, len(result.Widgets))
+	for i, w := range result.Widgets {
+		widgets[i] = map[string]interface{}(w)
+	}
+
+	log.Info("widgets fetched successfully",
+		zap.Int("total", result.TotalCount),
+		zap.Int("filtered", result.FilteredCount),
+		zap.Int("attempts", result.Attempts),
+		zap.Duration("duration", result.Duration))
+
+	return widgets, nil
 }
 
 // processCanvusPrecis generates and creates a summary of the canvas
@@ -1904,125 +1883,42 @@ func createProcessingNote(client *canvusapi.Client, update Update, config *core.
 	return noteResp["id"].(string), nil
 }
 
-// performGoogleVisionOCR performs OCR using Google Vision API
+// performGoogleVisionOCR performs OCR using ocrprocessor package
 func performGoogleVisionOCR(ctx context.Context, imageData []byte, config *core.Config, log *logging.Logger) (string, error) {
-	log.Info("starting Google Vision OCR process")
+	log.Info("starting Google Vision OCR process via ocrprocessor")
 
 	apiKey := config.GoogleVisionKey
 	if apiKey == "" {
 		return "", fmt.Errorf("Google Vision API key not found in configuration")
 	}
 
-	// Validate API key with minimal request
-	if err := validateGoogleAPIKey(ctx, apiKey, config, log); err != nil {
-		log.Error("Google Vision API key validation failed", zap.Error(err))
-		return "", fmt.Errorf("invalid API key: %w", err)
-	}
-
-	log.Debug("Google Vision API key validated successfully")
-
-	// Log image data details
-	log.Debug("image data received",
-		zap.Int("size_bytes", len(imageData)))
-
-	// Create request body as JSON
-	requestBody := GoogleVisionRequest{
-		Requests: []struct {
-			Image struct {
-				Content string `json:"content"`
-			} `json:"image"`
-			Features []struct {
-				Type       string `json:"type"`
-				MaxResults int    `json:"maxResults"`
-			} `json:"features"`
-		}{
-			{
-				Image: struct {
-					Content string `json:"content"`
-				}{
-					Content: base64.StdEncoding.EncodeToString(imageData),
-				},
-				Features: []struct {
-					Type       string `json:"type"`
-					MaxResults int    `json:"maxResults"`
-				}{
-					{
-						Type:       visionFeatureType,
-						MaxResults: 1,
-					},
-				},
-			},
-		},
-	}
-
-	// Convert request to JSON
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-	log.Debug("request JSON created",
-		zap.Int("size_bytes", len(jsonData)))
-
-	// Create HTTP request
-	url := fmt.Sprintf("%s?key=%s", visionAPIEndpoint, apiKey)
-	log.Debug("making request to Google Vision API")
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Send request
-	log.Debug("sending request to Google Vision API")
+	// Create HTTP client with TLS settings
 	httpClient := core.GetDefaultHTTPClient(config)
-	resp, err := httpClient.Do(req)
+
+	// Create OCR processor
+	processor, err := ocrprocessor.NewProcessor(apiKey, httpClient, log, ocrprocessor.DefaultProcessorConfig())
 	if err != nil {
-		return "", fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Log response status
-	log.Debug("received response from Google Vision API",
-		zap.Int("status_code", resp.StatusCode),
-		zap.String("status", resp.Status))
-
-	// Only consider it a failure if the API response is not 200
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Google Vision API error: status %d: %s", resp.StatusCode, string(bodyBytes))
+		log.Error("failed to create OCR processor", zap.Error(err))
+		return "", fmt.Errorf("failed to create OCR processor: %w", err)
 	}
 
-	// Read response body
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// Process the image using ocrprocessor
+	result, err := processor.ProcessImage(ctx, imageData)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
-	}
-	log.Debug("response body received",
-		zap.Int("size_bytes", len(bodyBytes)))
-
-	var visionResponse GoogleVisionResponse
-	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&visionResponse); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		log.Error("OCR processing failed", zap.Error(err))
+		return "", fmt.Errorf("OCR processing failed: %w", err)
 	}
 
-	// Check for API-level errors in the response
-	if len(visionResponse.Responses) == 0 {
-		return "", fmt.Errorf("empty response from Vision API")
-	}
-	if visionResponse.Responses[0].Error.Message != "" {
-		return "", fmt.Errorf("Vision API error: %s", visionResponse.Responses[0].Error.Message)
-	}
-
-	extractedText := visionResponse.Responses[0].FullTextAnnotation.Text
-	if extractedText == "" {
+	if result.Text == "" {
 		return "", fmt.Errorf("no text found in image")
 	}
 
 	log.Info("OCR completed successfully",
-		zap.Int("text_length", len(extractedText)))
+		zap.Int("text_length", len(result.Text)),
+		zap.Duration("processing_time", result.ProcessingTime),
+		zap.Duration("vision_api_time", result.VisionAPITime))
 
-	return extractedText, nil
+	return result.Text, nil
 }
 
 // validateGoogleAPIKey makes a minimal API call to verify the key works
