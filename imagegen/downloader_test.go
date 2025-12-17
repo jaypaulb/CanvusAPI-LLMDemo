@@ -313,12 +313,12 @@ func TestExtensionFromContentType(t *testing.T) {
 		{"image/gif", ".gif"},
 		{"image/webp", ".webp"},
 		{"image/bmp", ".bmp"},
-		{"IMAGE/PNG", ".png"},                     // case insensitive
-		{"image/png; charset=utf-8", ".png"},      // with parameters
-		{"image/unknown", ".png"},                 // unknown image type defaults to png
-		{"text/plain", ""},                        // non-image type
-		{"", ""},                                  // empty
-		{"application/octet-stream", ""},          // binary
+		{"IMAGE/PNG", ".png"},                // case insensitive
+		{"image/png; charset=utf-8", ".png"}, // with parameters
+		{"image/unknown", ".png"},            // unknown image type defaults to png
+		{"text/plain", ""},                   // non-image type
+		{"", ""},                             // empty
+		{"application/octet-stream", ""},     // binary
 	}
 
 	for _, tt := range tests {

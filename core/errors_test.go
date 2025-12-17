@@ -75,8 +75,8 @@ func TestErrInvalidServerURL(t *testing.T) {
 
 func TestErrMissingAuth(t *testing.T) {
 	tests := []struct {
-		service    string
-		expectEnv  string
+		service   string
+		expectEnv string
 	}{
 		{"canvus", "CANVUS_API_KEY"},
 		{"openai", "OPENAI_API_KEY"},

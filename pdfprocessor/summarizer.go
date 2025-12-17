@@ -51,11 +51,11 @@ type SummarizerConfig struct {
 // DefaultSummarizerConfig returns sensible default configuration for PDF summarization.
 func DefaultSummarizerConfig() SummarizerConfig {
 	return SummarizerConfig{
-		Model:       "gpt-4",
-		MaxTokens:   2000,
-		Temperature: 0.3,
+		Model:                "gpt-4",
+		MaxTokens:            2000,
+		Temperature:          0.3,
 		SystemPromptTemplate: `You will receive %d chunks of a document. Do not respond until you receive the final chunk. After the last chunk, I will prompt you for your analysis of the entire document.`,
-		ChunkTemplate: "#--- chunk %d of %d ---#\n%s\n#--- end of chunk %d ---#",
+		ChunkTemplate:        "#--- chunk %d of %d ---#\n%s\n#--- end of chunk %d ---#",
 		FinalPrompt: `You have now received all chunks. Please analyze the entire document and provide a summary in the following JSON format:
 {"type": "text", "content": "..."}
 The content field must be a Markdown-formatted summary with the following sections:

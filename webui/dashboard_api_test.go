@@ -13,11 +13,11 @@ import (
 
 // mockMetricsCollector is a test implementation of MetricsCollector.
 type mockMetricsCollector struct {
-	systemStatus    metrics.SystemStatus
-	canvasStatuses  []metrics.CanvasStatus
-	taskRecords     []metrics.TaskRecord
-	taskMetrics     metrics.TaskMetrics
-	gpuMetrics      metrics.GPUMetrics
+	systemStatus   metrics.SystemStatus
+	canvasStatuses []metrics.CanvasStatus
+	taskRecords    []metrics.TaskRecord
+	taskMetrics    metrics.TaskMetrics
+	gpuMetrics     metrics.GPUMetrics
 }
 
 func newMockMetricsCollector() *mockMetricsCollector {

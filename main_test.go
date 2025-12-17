@@ -297,7 +297,6 @@ func TestSignalExitCodeMapping(t *testing.T) {
 	}
 }
 
-
 // TestShutdownSequence tests that cleanup functions are registered and executed.
 // This is a focused unit test of the shutdown integration logic.
 func TestShutdownSequence(t *testing.T) {
@@ -332,34 +331,6 @@ func TestShutdownSequence(t *testing.T) {
 	}
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // TestSignalNotifyWrapper tests that the signalNotify wrapper can be mocked.
 func TestSignalNotifyWrapper(t *testing.T) {
 	// DOING: Test signalNotify wrapper is mockable
@@ -388,10 +359,10 @@ func TestSignalNotifyWrapper(t *testing.T) {
 // TestExitCodePriority tests that error exit codes take priority over signal codes.
 func TestExitCodePriority(t *testing.T) {
 	tests := []struct {
-		name             string
-		initialCode      int
-		hadError         bool
-		signal           os.Signal
+		name              string
+		initialCode       int
+		hadError          bool
+		signal            os.Signal
 		expectedFinalCode int
 	}{
 		{

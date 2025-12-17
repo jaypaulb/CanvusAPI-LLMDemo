@@ -8,7 +8,8 @@ import (
 
 // GenerateChecksumFile computes the SHA256 checksum of a file and writes it to a .sha256 file.
 // The output format is compatible with sha256sum (Linux) and can be verified with:
-//   sha256sum -c filename.sha256
+//
+//	sha256sum -c filename.sha256
 //
 // Parameters:
 //   - filePath: path to the file to checksum

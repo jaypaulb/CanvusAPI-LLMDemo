@@ -41,9 +41,9 @@ type FetcherConfig struct {
 // DefaultFetcherConfig returns sensible default configuration.
 func DefaultFetcherConfig() FetcherConfig {
 	return FetcherConfig{
-		MaxRetries: 3,
-		RetryDelay: 2 * time.Second,
-		ExcludeIDs: nil,
+		MaxRetries:  3,
+		RetryDelay:  2 * time.Second,
+		ExcludeIDs:  nil,
 		FilterTypes: nil,
 	}
 }

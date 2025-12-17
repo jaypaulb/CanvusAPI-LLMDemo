@@ -99,22 +99,22 @@ func TestCalculateOffsetLocation(t *testing.T) {
 		wantX, wantY float64
 	}{
 		{
-			name:   "zero offset",
-			x:      100, y: 200,
+			name: "zero offset",
+			x:    100, y: 200,
 			width: 400, height: 300,
 			offsetX: 0, offsetY: 0,
 			wantX: 100, wantY: 200,
 		},
 		{
-			name:   "standard 80% offset",
-			x:      100, y: 200,
+			name: "standard 80% offset",
+			x:    100, y: 200,
 			width: 400, height: 300,
 			offsetX: 0.8, offsetY: 0.8,
 			wantX: 420, wantY: 440, // 100 + (400*0.8), 200 + (300*0.8)
 		},
 		{
-			name:   "negative offset",
-			x:      100, y: 200,
+			name: "negative offset",
+			x:    100, y: 200,
 			width: 400, height: 300,
 			offsetX: -0.5, offsetY: -0.5,
 			wantX: -100, wantY: 50, // 100 + (400*-0.5), 200 + (300*-0.5)
@@ -226,10 +226,10 @@ func TestReduceBackgroundOpacity(t *testing.T) {
 
 func TestCalculateDepthOffset(t *testing.T) {
 	tests := []struct {
-		name         string
-		original     float64
-		offset       float64
-		want         float64
+		name     string
+		original float64
+		offset   float64
+		want     float64
 	}{
 		{"positive offset", 100, 200, 300},
 		{"negative offset", 100, -50, 50},

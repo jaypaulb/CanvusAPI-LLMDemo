@@ -117,11 +117,11 @@ func main() {
 
 	// Create repository first (without async writer)
 	tempRepo := db.NewRepository(database, nil)
-	
+
 	// Create and start async writer with handler from repository
 	asyncWriter := db.NewAsyncWriter(tempRepo.CreateAsyncWriteHandler())
 	asyncWriter.Start()
-	
+
 	// Create final repository with async writer attached
 	repository := db.NewRepository(database, asyncWriter)
 	logger.Info("Database and repository initialized")
@@ -236,7 +236,7 @@ func main() {
 	// Initialize WebUIServer with the real components
 	serverConfig := webui.ServerConfig{
 		Port:            config.Port,
-		Host:            "",  // Bind to all interfaces
+		Host:            "", // Bind to all interfaces
 		ReadTimeout:     DefaultReadTimeout,
 		WriteTimeout:    DefaultWriteTimeout,
 		IdleTimeout:     DefaultIdleTimeout,

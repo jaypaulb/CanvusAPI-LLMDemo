@@ -28,9 +28,9 @@ func newMockObjectEncoder() *mockObjectEncoder {
 	}
 }
 
-func (m *mockObjectEncoder) AddString(key, value string)    { m.strings[key] = value }
-func (m *mockObjectEncoder) AddInt(key string, value int)   { m.ints[key] = value }
-func (m *mockObjectEncoder) AddInt64(key string, value int64) { m.int64s[key] = value }
+func (m *mockObjectEncoder) AddString(key, value string)          { m.strings[key] = value }
+func (m *mockObjectEncoder) AddInt(key string, value int)         { m.ints[key] = value }
+func (m *mockObjectEncoder) AddInt64(key string, value int64)     { m.int64s[key] = value }
 func (m *mockObjectEncoder) AddFloat64(key string, value float64) { m.float64s[key] = value }
 func (m *mockObjectEncoder) AddObject(key string, obj zapcore.ObjectMarshaler) error {
 	m.objects[key] = obj

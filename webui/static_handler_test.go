@@ -12,20 +12,20 @@ import (
 func TestStaticAssetHandler_ServeHTTP(t *testing.T) {
 	// Create a test filesystem
 	testFS := fstest.MapFS{
-		"index.html":         {Data: []byte("<html>Dashboard</html>")},
-		"css/dashboard.css":  {Data: []byte("body { color: white; }")},
-		"js/dashboard.js":    {Data: []byte("console.log('dashboard');")},
-		"js/websocket.js":    {Data: []byte("class WebSocketClient {}")},
-		"subdir/index.html":  {Data: []byte("<html>Subdir</html>")},
+		"index.html":        {Data: []byte("<html>Dashboard</html>")},
+		"css/dashboard.css": {Data: []byte("body { color: white; }")},
+		"js/dashboard.js":   {Data: []byte("console.log('dashboard');")},
+		"js/websocket.js":   {Data: []byte("class WebSocketClient {}")},
+		"subdir/index.html": {Data: []byte("<html>Subdir</html>")},
 	}
 
 	config := DefaultStaticAssetConfig()
 	handler := NewStaticAssetHandlerWithFS(testFS, config)
 
 	tests := []struct {
-		name           string
-		path           string
-		wantStatus     int
+		name             string
+		path             string
+		wantStatus       int
 		wantBodyContains string
 		wantContentType  string
 	}{
@@ -211,12 +211,12 @@ func TestStaticAssetHandler_DetectContentType(t *testing.T) {
 	}{
 		{"/index.html", "text/html"},
 		{"/style.css", "text/css"},
-		{"/app.js", "javascript"},           // Go's mime returns "text/javascript"
+		{"/app.js", "javascript"}, // Go's mime returns "text/javascript"
 		{"/data.json", "application/json"},
 		{"/image.png", "image/png"},
 		{"/image.jpg", "image/jpeg"},
 		{"/image.svg", "image/svg+xml"},
-		{"/icon.ico", "image"},              // Go's mime returns "image/vnd.microsoft.icon"
+		{"/icon.ico", "image"}, // Go's mime returns "image/vnd.microsoft.icon"
 		{"/font.woff", "font/woff"},
 		{"/font.woff2", "font/woff2"},
 		{"/unknown.xyz", "application/octet-stream"},

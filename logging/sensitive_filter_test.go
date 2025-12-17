@@ -7,10 +7,10 @@ import (
 
 func TestRedactSensitiveData(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		contains string // what the output should NOT contain (the sensitive part)
-		hasRedacted bool // whether output should contain [REDACTED]
+		name        string
+		input       string
+		contains    string // what the output should NOT contain (the sensitive part)
+		hasRedacted bool   // whether output should contain [REDACTED]
 	}{
 		{
 			name:        "OpenAI API key",

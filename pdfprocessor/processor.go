@@ -63,9 +63,9 @@ type ProcessResult struct {
 
 // ProcessingStages contains timing information for each stage.
 type ProcessingStages struct {
-	ExtractionTime   time.Duration
-	ChunkingTime     time.Duration
-	SummarizingTime  time.Duration
+	ExtractionTime  time.Duration
+	ChunkingTime    time.Duration
+	SummarizingTime time.Duration
 }
 
 // ProgressCallback is called to report processing progress.

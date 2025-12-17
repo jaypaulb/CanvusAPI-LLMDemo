@@ -7,9 +7,9 @@ import (
 
 func TestValidateGoogleAPIKey(t *testing.T) {
 	tests := []struct {
-		name      string
-		apiKey    string
-		wantErr   error
+		name       string
+		apiKey     string
+		wantErr    error
 		wantNilErr bool
 	}{
 		{
@@ -28,18 +28,18 @@ func TestValidateGoogleAPIKey(t *testing.T) {
 			wantErr: ErrAPIKeyTooShort,
 		},
 		{
-			name:    "valid Google API key format",
-			apiKey:  "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY",
+			name:       "valid Google API key format",
+			apiKey:     "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY",
 			wantNilErr: true,
 		},
 		{
-			name:    "valid key with whitespace",
-			apiKey:  "  AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY  ",
+			name:       "valid key with whitespace",
+			apiKey:     "  AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY  ",
 			wantNilErr: true,
 		},
 		{
-			name:    "non-Google key format but valid length",
-			apiKey:  "sk-1234567890abcdefghijklmnopqrstuvwxyz",
+			name:       "non-Google key format but valid length",
+			apiKey:     "sk-1234567890abcdefghijklmnopqrstuvwxyz",
 			wantNilErr: true, // We accept non-Google keys of valid length
 		},
 		{
@@ -128,10 +128,10 @@ func TestIsGoogleAPIKey(t *testing.T) {
 
 func TestSanitizeAPIKey(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		wantKey     string
-		wantErr     bool
+		name    string
+		input   string
+		wantKey string
+		wantErr bool
 	}{
 		{
 			name:    "empty returns error",

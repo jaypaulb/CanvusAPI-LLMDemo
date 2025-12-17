@@ -23,11 +23,11 @@ import (
 // - GET /api/metrics   - Task processing metrics
 // - GET /api/gpu       - GPU metrics (with optional history param)
 type DashboardAPI struct {
-	store          metrics.MetricsCollector
-	gpuCollector   *metrics.GPUCollector
-	defaultLimit   int
-	maxLimit       int
-	versionInfo    VersionInfo
+	store        metrics.MetricsCollector
+	gpuCollector *metrics.GPUCollector
+	defaultLimit int
+	maxLimit     int
+	versionInfo  VersionInfo
 }
 
 // VersionInfo contains version metadata for the status endpoint.
@@ -82,14 +82,14 @@ func NewDashboardAPI(store metrics.MetricsCollector, gpuCollector *metrics.GPUCo
 
 // StatusResponse represents the JSON response for /api/status.
 type StatusResponse struct {
-	Health     string        `json:"health"`
-	Version    string        `json:"version"`
-	BuildDate  string        `json:"build_date,omitempty"`
-	GitCommit  string        `json:"git_commit,omitempty"`
-	Uptime     string        `json:"uptime"`
-	UptimeSecs float64       `json:"uptime_secs"`
-	LastCheck  time.Time     `json:"last_check"`
-	GPUAvail   bool          `json:"gpu_available"`
+	Health     string    `json:"health"`
+	Version    string    `json:"version"`
+	BuildDate  string    `json:"build_date,omitempty"`
+	GitCommit  string    `json:"git_commit,omitempty"`
+	Uptime     string    `json:"uptime"`
+	UptimeSecs float64   `json:"uptime_secs"`
+	LastCheck  time.Time `json:"last_check"`
+	GPUAvail   bool      `json:"gpu_available"`
 }
 
 // HandleStatus handles GET /api/status requests.
@@ -217,8 +217,8 @@ func (api *DashboardAPI) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 
 // GPUResponse represents the JSON response for /api/gpu.
 type GPUResponse struct {
-	Available   bool                `json:"available"`
-	Current     *metrics.GPUMetrics `json:"current,omitempty"`
+	Available   bool                 `json:"available"`
+	Current     *metrics.GPUMetrics  `json:"current,omitempty"`
 	History     []metrics.GPUMetrics `json:"history,omitempty"`
 	HistorySize int                  `json:"history_size,omitempty"`
 	Error       string               `json:"error,omitempty"`

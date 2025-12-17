@@ -28,8 +28,8 @@ type Config struct {
 	// Server Configuration
 	CanvusServerURL      string
 	CanvasName           string
-	CanvasID             string             // Primary canvas ID (backward compatibility)
-	CanvasConfigs        []CanvasConfig     // Multi-canvas configuration
+	CanvasID             string         // Primary canvas ID (backward compatibility)
+	CanvasConfigs        []CanvasConfig // Multi-canvas configuration
 	WebUIPassword        string
 	Port                 int
 	AllowSelfSignedCerts bool
@@ -40,9 +40,9 @@ type Config struct {
 	ImageLLMURL string // Optional override for image generation
 
 	// Azure OpenAI Configuration
-	AzureOpenAIEndpoint    string // Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
-	AzureOpenAIDeployment  string // Azure deployment name for image generation
-	AzureOpenAIApiVersion  string // Azure API version (default: 2024-02-15-preview)
+	AzureOpenAIEndpoint   string // Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
+	AzureOpenAIDeployment string // Azure deployment name for image generation
+	AzureOpenAIApiVersion string // Azure API version (default: 2024-02-15-preview)
 
 	// Model Selection
 	OpenAINoteModel   string
@@ -141,7 +141,7 @@ func LoadConfig() (*Config, error) {
 
 	// Load LLM URLs
 	baseLLMURL := getEnvOrDefault("BASE_LLM_URL", "http://127.0.0.1:1234/v1")
-	textLLMURL := os.Getenv("TEXT_LLM_URL")   // Optional override
+	textLLMURL := os.Getenv("TEXT_LLM_URL")                                      // Optional override
 	imageLLMURL := getEnvOrDefault("IMAGE_LLM_URL", "https://api.openai.com/v1") // Default to OpenAI for image generation
 
 	// Load Azure OpenAI configuration

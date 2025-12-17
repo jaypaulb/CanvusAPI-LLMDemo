@@ -84,7 +84,7 @@ type visionRequest struct {
 
 // visionRequestItem represents a single request in the batch.
 type visionRequestItem struct {
-	Image    visionImage    `json:"image"`
+	Image    visionImage     `json:"image"`
 	Features []visionFeature `json:"features"`
 }
 

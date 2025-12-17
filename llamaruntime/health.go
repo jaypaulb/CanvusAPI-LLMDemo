@@ -384,11 +384,11 @@ func DefaultHealthCheckerConfig() HealthCheckerConfig {
 
 // HealthChecker performs periodic health verification.
 type HealthChecker struct {
-	config    HealthCheckerConfig
-	client    *Client
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	config HealthCheckerConfig
+	client *Client
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 
 	// State
 	running      int32 // atomic

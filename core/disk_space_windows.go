@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	kernel32             = syscall.NewLazyDLL("kernel32.dll")
-	getDiskFreeSpaceExW  = kernel32.NewProc("GetDiskFreeSpaceExW")
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	getDiskFreeSpaceExW = kernel32.NewProc("GetDiskFreeSpaceExW")
 )
 
 // getDiskSpace returns total and free bytes for the filesystem containing path.

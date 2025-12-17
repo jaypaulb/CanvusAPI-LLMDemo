@@ -268,4 +268,3 @@ func ExtractTextWithTokenEstimate(pdfPath string) (string, int, error) {
 	}
 	return result.Text, result.EstimatedTokens, nil
 }
-

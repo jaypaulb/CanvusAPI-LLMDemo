@@ -31,7 +31,7 @@ var DefaultTextModel = ModelConfig{
 	Name:           "bunny-v1.1-llama-3.2-4b",
 	URL:            "https://huggingface.co/BAAI/Bunny-v1_1-4B/resolve/main/ggml-model-Q4_K_M.gguf",
 	Filename:       "bunny-v1.1-llama-3.2-4b-Q4_K_M.gguf",
-	ExpectedSHA256: "", // To be filled with actual checksum when known
+	ExpectedSHA256: "",             // To be filled with actual checksum when known
 	SizeBytes:      3 * BytesPerGB, // ~3GB for 4B Q4_K_M model
 }
 
@@ -40,7 +40,7 @@ var DefaultVisionModel = ModelConfig{
 	Name:           "bunny-mmproj",
 	URL:            "https://huggingface.co/BAAI/Bunny-v1_1-4B/resolve/main/mmproj-model-f16.gguf",
 	Filename:       "bunny-mmproj-f16.gguf",
-	ExpectedSHA256: "", // To be filled with actual checksum when known
+	ExpectedSHA256: "",               // To be filled with actual checksum when known
 	SizeBytes:      600 * BytesPerMB, // ~600MB for vision projector
 }
 
@@ -49,7 +49,7 @@ var DefaultSDModel = ModelConfig{
 	Name:           "sd-turbo",
 	URL:            "https://huggingface.co/stabilityai/sd-turbo/resolve/main/sd_turbo.safetensors",
 	Filename:       "sd-turbo.safetensors",
-	ExpectedSHA256: "", // To be filled with actual checksum when known
+	ExpectedSHA256: "",             // To be filled with actual checksum when known
 	SizeBytes:      2 * BytesPerGB, // ~2GB for SD Turbo
 }
 

@@ -78,12 +78,12 @@ func skipIfNoAzureConfig(t *testing.T) (apiKey, endpoint, deployment string) {
 func createTestConfig(t *testing.T, apiKey string) *core.Config {
 	t.Helper()
 	return &core.Config{
-		OpenAIAPIKey:        apiKey,
-		ImageLLMURL:         "https://api.openai.com/v1",
-		OpenAIImageModel:    "dall-e-3",
-		AITimeout:           integrationTestTimeout,
+		OpenAIAPIKey:         apiKey,
+		ImageLLMURL:          "https://api.openai.com/v1",
+		OpenAIImageModel:     "dall-e-3",
+		AITimeout:            integrationTestTimeout,
 		AllowSelfSignedCerts: false,
-		DownloadsDir:        t.TempDir(),
+		DownloadsDir:         t.TempDir(),
 	}
 }
 
@@ -330,7 +330,7 @@ func TestIntegration_Downloader_Download(t *testing.T) {
 
 	cfg := &core.Config{
 		AllowSelfSignedCerts: false,
-		DownloadsDir:        t.TempDir(),
+		DownloadsDir:         t.TempDir(),
 	}
 
 	downloader, err := NewDownloader(cfg)
@@ -369,7 +369,7 @@ func TestIntegration_Downloader_Download(t *testing.T) {
 func TestIntegration_Downloader_DownloadInvalidURL(t *testing.T) {
 	cfg := &core.Config{
 		AllowSelfSignedCerts: false,
-		DownloadsDir:        t.TempDir(),
+		DownloadsDir:         t.TempDir(),
 	}
 
 	downloader, err := NewDownloader(cfg)
@@ -391,7 +391,7 @@ func TestIntegration_Downloader_DownloadInvalidURL(t *testing.T) {
 func TestIntegration_Downloader_Download404(t *testing.T) {
 	cfg := &core.Config{
 		AllowSelfSignedCerts: false,
-		DownloadsDir:        t.TempDir(),
+		DownloadsDir:         t.TempDir(),
 	}
 
 	downloader, err := NewDownloader(cfg)

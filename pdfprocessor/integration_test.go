@@ -534,8 +534,8 @@ func TestIntegration_LargeContent_Chunking(t *testing.T) {
 	// Token estimation is ~4 chars per token, so 500 tokens = ~2000 chars
 	// Use PreserveParagraphs=false to enable token-based chunking
 	config := DefaultProcessorConfig()
-	config.ChunkerConfig.MaxChunkTokens = 500  // Much smaller chunks
-	config.ChunkerConfig.MaxChunks = 10        // Allow more chunks
+	config.ChunkerConfig.MaxChunkTokens = 500       // Much smaller chunks
+	config.ChunkerConfig.MaxChunks = 10             // Allow more chunks
 	config.ChunkerConfig.PreserveParagraphs = false // Force token-based chunking
 
 	processor := NewProcessor(config, client)
@@ -593,7 +593,7 @@ func TestIntegration_LargeContent_ParagraphChunking(t *testing.T) {
 
 	// Configure for paragraph-aware chunking
 	config := DefaultProcessorConfig()
-	config.ChunkerConfig.MaxChunkTokens = 100  // Small chunks
+	config.ChunkerConfig.MaxChunkTokens = 100 // Small chunks
 	config.ChunkerConfig.MaxChunks = 10
 	config.ChunkerConfig.PreserveParagraphs = true // Paragraph-based chunking
 

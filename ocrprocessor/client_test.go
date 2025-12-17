@@ -31,11 +31,11 @@ func TestNewVisionClient(t *testing.T) {
 	httpClient := &http.Client{}
 
 	tests := []struct {
-		name       string
-		apiKey     string
-		httpClient *http.Client
-		logger     *logging.Logger
-		wantErr    bool
+		name        string
+		apiKey      string
+		httpClient  *http.Client
+		logger      *logging.Logger
+		wantErr     bool
 		errContains string
 	}{
 		{

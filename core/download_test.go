@@ -320,4 +320,3 @@ func TestDownloadWithResume(t *testing.T) {
 		t.Error("ChecksumValid = false, want true")
 	}
 }
-

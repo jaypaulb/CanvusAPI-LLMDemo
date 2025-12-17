@@ -13,13 +13,13 @@ import (
 
 // mockCanvasChecker implements CanvasChecker for testing.
 type mockCanvasChecker struct {
-	canvasID    string
-	serverURL   string
-	healthy     bool
-	checkCount  int32
-	info        map[string]interface{}
-	err         error
-	mu          sync.Mutex
+	canvasID   string
+	serverURL  string
+	healthy    bool
+	checkCount int32
+	info       map[string]interface{}
+	err        error
+	mu         sync.Mutex
 }
 
 func newMockCanvasChecker(id, serverURL string, healthy bool) *mockCanvasChecker {

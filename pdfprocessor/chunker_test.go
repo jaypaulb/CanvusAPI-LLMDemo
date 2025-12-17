@@ -127,8 +127,8 @@ func TestChunker_SplitIntoChunks_MultipleParagraphs(t *testing.T) {
 
 func TestChunker_SplitIntoChunks_MaxChunksLimit(t *testing.T) {
 	config := ChunkerConfig{
-		MaxChunkTokens:     10,  // Very small to force many chunks
-		MaxChunks:          3,   // Limit to 3 chunks
+		MaxChunkTokens:     10, // Very small to force many chunks
+		MaxChunks:          3,  // Limit to 3 chunks
 		PreserveParagraphs: false,
 		ParagraphSeparator: "\n\n",
 	}
@@ -176,8 +176,8 @@ func TestChunker_SplitIntoChunks_PreserveParagraphsFalse(t *testing.T) {
 
 func TestChunker_SplitIntoChunks_WithOverlap(t *testing.T) {
 	config := ChunkerConfig{
-		MaxChunkTokens:     25,  // ~100 chars
-		OverlapTokens:      5,   // ~20 chars overlap
+		MaxChunkTokens:     25, // ~100 chars
+		OverlapTokens:      5,  // ~20 chars overlap
 		PreserveParagraphs: false,
 		ParagraphSeparator: "\n\n",
 	}

@@ -9,12 +9,12 @@ import (
 // MockCollector is a simple in-memory implementation of MetricsCollector for testing.
 // This validates that the interface can be implemented and used correctly.
 type MockCollector struct {
-	mu              sync.RWMutex
-	tasks           []TaskRecord
-	taskMetrics     TaskMetrics
-	gpuMetrics      GPUMetrics
-	canvasStatuses  map[string]CanvasStatus
-	systemStatus    SystemStatus
+	mu             sync.RWMutex
+	tasks          []TaskRecord
+	taskMetrics    TaskMetrics
+	gpuMetrics     GPUMetrics
+	canvasStatuses map[string]CanvasStatus
+	systemStatus   SystemStatus
 }
 
 // NewMockCollector creates a new mock collector for testing.

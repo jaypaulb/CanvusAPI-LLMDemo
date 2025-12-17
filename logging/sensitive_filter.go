@@ -14,23 +14,23 @@ var sensitivePatterns = []*regexp.Regexp{
 	// API keys - common formats
 	// OpenAI API keys: sk-... (legacy) or sk-proj-... (project-scoped)
 	regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9_-]{20,})`),
-	regexp.MustCompile(`(?i)(AIza[a-zA-Z0-9_-]{35})`),                   // Google API keys
-	regexp.MustCompile(`(?i)([a-f0-9]{32})`),                            // Generic 32-char hex (many API keys)
-	regexp.MustCompile(`(?i)(ghp_[a-zA-Z0-9]{36})`),                     // GitHub tokens
-	regexp.MustCompile(`(?i)(gho_[a-zA-Z0-9]{36})`),                     // GitHub OAuth tokens
-	regexp.MustCompile(`(?i)(github_pat_[a-zA-Z0-9_]{22,})`),            // GitHub fine-grained tokens
-	regexp.MustCompile(`(?i)(xox[baprs]-[a-zA-Z0-9-]{10,})`),            // Slack tokens
-	regexp.MustCompile(`(?i)(bearer\s+[a-zA-Z0-9._-]{20,})`),            // Bearer tokens
+	regexp.MustCompile(`(?i)(AIza[a-zA-Z0-9_-]{35})`),        // Google API keys
+	regexp.MustCompile(`(?i)([a-f0-9]{32})`),                 // Generic 32-char hex (many API keys)
+	regexp.MustCompile(`(?i)(ghp_[a-zA-Z0-9]{36})`),          // GitHub tokens
+	regexp.MustCompile(`(?i)(gho_[a-zA-Z0-9]{36})`),          // GitHub OAuth tokens
+	regexp.MustCompile(`(?i)(github_pat_[a-zA-Z0-9_]{22,})`), // GitHub fine-grained tokens
+	regexp.MustCompile(`(?i)(xox[baprs]-[a-zA-Z0-9-]{10,})`), // Slack tokens
+	regexp.MustCompile(`(?i)(bearer\s+[a-zA-Z0-9._-]{20,})`), // Bearer tokens
 
 	// Azure patterns
 	regexp.MustCompile(`(?i)(DefaultEndpointsProtocol=[^;]+;[^"'\s]+)`), // Azure connection strings
 
 	// Generic secret patterns
-	regexp.MustCompile(`(?i)(password\s*[:=]\s*[^\s,;]{8,})`),  // password= or password:
-	regexp.MustCompile(`(?i)(secret\s*[:=]\s*[^\s,;]{8,})`),    // secret= or secret:
-	regexp.MustCompile(`(?i)(token\s*[:=]\s*[^\s,;]{8,})`),     // token= or token:
-	regexp.MustCompile(`(?i)(api_key\s*[:=]\s*[^\s,;]{8,})`),   // api_key= or api_key:
-	regexp.MustCompile(`(?i)(apikey\s*[:=]\s*[^\s,;]{8,})`),    // apikey= or apikey:
+	regexp.MustCompile(`(?i)(password\s*[:=]\s*[^\s,;]{8,})`), // password= or password:
+	regexp.MustCompile(`(?i)(secret\s*[:=]\s*[^\s,;]{8,})`),   // secret= or secret:
+	regexp.MustCompile(`(?i)(token\s*[:=]\s*[^\s,;]{8,})`),    // token= or token:
+	regexp.MustCompile(`(?i)(api_key\s*[:=]\s*[^\s,;]{8,})`),  // api_key= or api_key:
+	regexp.MustCompile(`(?i)(apikey\s*[:=]\s*[^\s,;]{8,})`),   // apikey= or apikey:
 }
 
 // sensitiveEnvVarPrefixes are environment variable name prefixes that indicate sensitive data

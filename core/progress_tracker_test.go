@@ -233,7 +233,7 @@ func TestProgressTracker_ThreadSafety(t *testing.T) {
 
 	wg.Wait()
 
-	expectedDownloaded := int64(numGoroutines * updatesPerGoroutine) * bytesPerUpdate
+	expectedDownloaded := int64(numGoroutines*updatesPerGoroutine) * bytesPerUpdate
 	if tracker.Downloaded() != expectedDownloaded {
 		t.Errorf("After concurrent updates, Downloaded() = %d, want %d",
 			tracker.Downloaded(), expectedDownloaded)

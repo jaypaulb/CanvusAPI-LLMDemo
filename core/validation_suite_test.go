@@ -337,8 +337,8 @@ func TestValidationSuite_hasAllPassed(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "empty",
-			steps: []ValidationStep{},
+			name:     "empty",
+			steps:    []ValidationStep{},
 			expected: true,
 		},
 		{

@@ -59,10 +59,10 @@ type GPUCollector struct {
 	reader GPUReader
 
 	// History storage (circular buffer)
-	history   []GPUMetrics
-	histHead  int
-	histSize  int
-	histCap   int
+	history  []GPUMetrics
+	histHead int
+	histSize int
+	histCap  int
 
 	// Current state
 	lastMetrics GPUMetrics

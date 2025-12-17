@@ -45,13 +45,13 @@ const (
 func NewEncoderConfig() zapcore.EncoderConfig {
 	return zapcore.EncoderConfig{
 		// Field keys
-		TimeKey:        FieldTimestamp,
-		LevelKey:       FieldLevel,
-		NameKey:        FieldSource,
-		CallerKey:      FieldCaller,
-		MessageKey:     FieldMessage,
-		StacktraceKey:  FieldStacktrace,
-		LineEnding:     zapcore.DefaultLineEnding,
+		TimeKey:       FieldTimestamp,
+		LevelKey:      FieldLevel,
+		NameKey:       FieldSource,
+		CallerKey:     FieldCaller,
+		MessageKey:    FieldMessage,
+		StacktraceKey: FieldStacktrace,
+		LineEnding:    zapcore.DefaultLineEnding,
 
 		// Encoders
 		EncodeLevel:    zapcore.LowercaseLevelEncoder,
@@ -68,13 +68,13 @@ func NewEncoderConfig() zapcore.EncoderConfig {
 func NewConsoleEncoderConfig() zapcore.EncoderConfig {
 	return zapcore.EncoderConfig{
 		// Field keys
-		TimeKey:        FieldTimestamp,
-		LevelKey:       FieldLevel,
-		NameKey:        FieldSource,
-		CallerKey:      FieldCaller,
-		MessageKey:     FieldMessage,
-		StacktraceKey:  FieldStacktrace,
-		LineEnding:     zapcore.DefaultLineEnding,
+		TimeKey:       FieldTimestamp,
+		LevelKey:      FieldLevel,
+		NameKey:       FieldSource,
+		CallerKey:     FieldCaller,
+		MessageKey:    FieldMessage,
+		StacktraceKey: FieldStacktrace,
+		LineEnding:    zapcore.DefaultLineEnding,
 
 		// Encoders - console-friendly
 		EncodeLevel:    zapcore.CapitalColorLevelEncoder,

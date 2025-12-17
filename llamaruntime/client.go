@@ -127,15 +127,15 @@ type Client struct {
 	closed    bool
 
 	// Statistics
-	startTime          time.Time
-	totalInferences    int64
-	totalVisionInfers  int64
-	totalTokensGen     int64
-	totalTokensPrompt  int64
-	totalDuration      int64 // nanoseconds
-	errorCount         int64
-	lastInference      time.Time
-	lastInferenceMu    sync.RWMutex
+	startTime         time.Time
+	totalInferences   int64
+	totalVisionInfers int64
+	totalTokensGen    int64
+	totalTokensPrompt int64
+	totalDuration     int64 // nanoseconds
+	errorCount        int64
+	lastInference     time.Time
+	lastInferenceMu   sync.RWMutex
 }
 
 // NewClient creates a new Client with the given configuration.
@@ -338,8 +338,8 @@ func (c *Client) Infer(ctx context.Context, params InferenceParams) (*InferenceR
 	duration := time.Since(startTime)
 
 	// Estimate token counts (approximation - actual counts from llama.cpp would be better)
-	tokensPrompt := len(params.Prompt) / 4   // ~4 chars per token
-	tokensGenerated := len(text) / 4          // ~4 chars per token
+	tokensPrompt := len(params.Prompt) / 4 // ~4 chars per token
+	tokensGenerated := len(text) / 4       // ~4 chars per token
 	if tokensGenerated < 1 {
 		tokensGenerated = 1
 	}

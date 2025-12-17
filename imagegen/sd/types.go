@@ -299,12 +299,12 @@ func (e GenerationError) Unwrap() error {
 
 // Common error codes
 const (
-	ErrCodeInvalidRequest  = "invalid_request"
-	ErrCodeModelNotFound   = "model_not_found"
-	ErrCodeModelLoadFailed = "model_load_failed"
-	ErrCodeOutOfMemory     = "out_of_memory"
-	ErrCodeTimeout         = "timeout"
-	ErrCodeCUDAUnavailable = "cuda_unavailable"
+	ErrCodeInvalidRequest   = "invalid_request"
+	ErrCodeModelNotFound    = "model_not_found"
+	ErrCodeModelLoadFailed  = "model_load_failed"
+	ErrCodeOutOfMemory      = "out_of_memory"
+	ErrCodeTimeout          = "timeout"
+	ErrCodeCUDAUnavailable  = "cuda_unavailable"
 	ErrCodeGenerationFailed = "generation_failed"
 )
 

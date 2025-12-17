@@ -29,14 +29,14 @@ func getTestPDFPath() string {
 
 func TestNewExtractor(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         ExtractorConfig
-		wantSeparator  string
+		name          string
+		config        ExtractorConfig
+		wantSeparator string
 	}{
 		{
-			name:           "default config",
-			config:         DefaultExtractorConfig(),
-			wantSeparator:  "\n\n",
+			name:          "default config",
+			config:        DefaultExtractorConfig(),
+			wantSeparator: "\n\n",
 		},
 		{
 			name: "custom separator",

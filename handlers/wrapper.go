@@ -191,7 +191,7 @@ func WrapLegacyHandlerWithError(legacy func(update map[string]interface{}, clien
 
 // OperationStats provides statistics about handler operations.
 type OperationStats struct {
-	ActiveCount   int64
+	ActiveCount    int64
 	IsShuttingDown bool
 }
 

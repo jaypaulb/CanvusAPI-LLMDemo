@@ -7,8 +7,8 @@ import (
 // TestCalculatePlacement tests the default placement calculation.
 func TestCalculatePlacement(t *testing.T) {
 	tests := []struct {
-		name     string
-		widget   SimpleWidget
+		name      string
+		widget    SimpleWidget
 		expectedX float64
 		expectedY float64
 	}{
@@ -89,8 +89,8 @@ func TestCalculatePlacementWithConfig(t *testing.T) {
 		{
 			name:      "negative offset",
 			config:    PlacementConfig{OffsetX: -20, OffsetY: -10},
-			expectedX: 80,  // 100 - 20
-			expectedY: 90,  // 100 - 10
+			expectedX: 80, // 100 - 20
+			expectedY: 90, // 100 - 10
 		},
 	}
 

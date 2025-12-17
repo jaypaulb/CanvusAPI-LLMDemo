@@ -42,12 +42,12 @@ type CanvasChecker interface {
 //	// ... later ...
 //	cancel() // Stop the monitor
 type CanvasHealthMonitor struct {
-	mu              sync.RWMutex
-	store           metrics.MetricsCollector
-	canvases        map[string]CanvasChecker
-	checkInterval   time.Duration
-	onStatusChange  func(canvasID string, connected bool) // Optional callback
-	logger          Logger
+	mu             sync.RWMutex
+	store          metrics.MetricsCollector
+	canvases       map[string]CanvasChecker
+	checkInterval  time.Duration
+	onStatusChange func(canvasID string, connected bool) // Optional callback
+	logger         Logger
 }
 
 // HealthMonitorConfig configures the CanvasHealthMonitor behavior.

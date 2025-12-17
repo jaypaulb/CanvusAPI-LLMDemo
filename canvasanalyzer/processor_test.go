@@ -238,7 +238,7 @@ func TestEstimateTokens(t *testing.T) {
 	}{
 		{"", 0},
 		{"abcd", 1},
-		{"hello world", 2}, // 11 chars / 4 = 2
+		{"hello world", 2},                       // 11 chars / 4 = 2
 		{"this is a longer text for testing", 8}, // 34 chars / 4 = 8
 	}
 

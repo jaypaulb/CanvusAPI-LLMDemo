@@ -267,7 +267,7 @@ func TestLoggerWithContext(t *testing.T) {
 	// Test that With() returns a new logger with context
 	correlationID := generateCorrelationID()
 	contextLogger := logger.With(
-		// zap fields would be added here in real usage
+	// zap fields would be added here in real usage
 	)
 
 	if contextLogger == nil {

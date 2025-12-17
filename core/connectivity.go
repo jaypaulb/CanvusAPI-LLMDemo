@@ -10,11 +10,11 @@ import (
 
 // ConnectivityResult represents the result of a connectivity check.
 type ConnectivityResult struct {
-	Reachable   bool
-	StatusCode  int
-	Message     string
-	Latency     time.Duration
-	Error       error
+	Reachable  bool
+	StatusCode int
+	Message    string
+	Latency    time.Duration
+	Error      error
 }
 
 // ConnectivityChecker provides methods to verify network connectivity.
