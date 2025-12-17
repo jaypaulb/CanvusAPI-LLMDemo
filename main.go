@@ -15,6 +15,7 @@ import (
 	"go_backend/core"
 	"go_backend/db"
 	"go_backend/imagegen"
+	"go_backend/llamaruntime"
 	"go_backend/logging"
 	"go_backend/metrics"
 	"go_backend/sdruntime"
@@ -189,6 +190,43 @@ func main() {
 		})
 	}
 
+	// Initialize llamaruntime (LLM inference) - optional
+	var llamaClient *llamaruntime.Client
+	var llamaHealthChecker *llamaruntime.HealthChecker
+	var llamaGPUMonitor *llamaruntime.GPUMonitor
+
+	llamaClient, llamaHealthChecker, llamaGPUMonitor, err = initializeLlamaRuntime(logger, shutdownManager.Context())
+	if err != nil {
+		// Log the error but continue - llamaruntime is optional
+		logger.Warn("llamaruntime initialization failed, local LLM inference disabled",
+			zap.Error(err))
+	} else if llamaClient != nil {
+		// Register llamaruntime shutdown (priority 35 - after SD pool)
+		shutdownManager.Register("llamaruntime", 35, func(ctx context.Context) error {
+			logger.Info("Shutting down llamaruntime...")
+
+			// Stop health checker first
+			if llamaHealthChecker != nil {
+				llamaHealthChecker.Stop()
+				logger.Info("llamaruntime health checker stopped")
+			}
+
+			// Stop GPU monitor
+			if llamaGPUMonitor != nil {
+				llamaGPUMonitor.Stop()
+				logger.Info("llamaruntime GPU monitor stopped")
+			}
+
+			// Close the client
+			if closeErr := llamaClient.Close(); closeErr != nil {
+				logger.Error("Failed to close llamaruntime client", zap.Error(closeErr))
+				return closeErr
+			}
+			logger.Info("llamaruntime client closed")
+			return nil
+		})
+	}
+
 	// Initialize MetricsStore for dashboard metrics
 	metricsConfig := metrics.StoreConfig{
 		TaskHistoryCapacity: 100,
@@ -229,6 +267,12 @@ func main() {
 	if imageProcessor != nil {
 		monitor.SetImagegenProcessor(imageProcessor)
 		logger.Info("Image generation enabled via SD runtime")
+	}
+
+	// Wire in the llamaruntime client if available
+	if llamaClient != nil {
+		monitor.SetLlamaClient(llamaClient)
+		logger.Info("Local LLM inference enabled via llamaruntime")
 	}
 
 	go monitor.Start(shutdownManager.Context())
@@ -498,6 +542,108 @@ func initializeSDRuntime(logger *logging.Logger, client *canvusapi.Client, confi
 	logger.Info("Image generation processor initialized")
 
 	return pool, processor, nil
+}
+
+// initializeLlamaRuntime initializes the llamaruntime LLM client.
+// Returns (nil, nil, nil, nil) if llamaruntime is not configured (no model path).
+// Returns (nil, nil, nil, error) if llamaruntime is configured but initialization fails.
+// Returns (client, healthChecker, gpuMonitor, nil) on success.
+//
+// This is a molecule that composes:
+//   - llamaruntime.NewModelLoader (molecule)
+//   - llamaruntime.NewHealthChecker (molecule)
+//   - llamaruntime.NewGPUMonitor (molecule)
+func initializeLlamaRuntime(logger *logging.Logger, ctx context.Context) (*llamaruntime.Client, *llamaruntime.HealthChecker, *llamaruntime.GPUMonitor, error) {
+	// Check if llamaruntime is configured
+	modelPath := os.Getenv("LLAMA_MODEL_PATH")
+	if modelPath == "" {
+		logger.Info("LLAMA_MODEL_PATH not configured, local LLM inference disabled")
+		return nil, nil, nil, nil
+	}
+
+	logger.Info("Initializing llamaruntime",
+		zap.String("model_path", modelPath),
+	)
+
+	// Configure model loader
+	loaderConfig := llamaruntime.DefaultModelLoaderConfig()
+	loaderConfig.ModelPath = modelPath
+	loaderConfig.ModelsDir = os.Getenv("LLAMA_MODELS_DIR")
+	if loaderConfig.ModelsDir == "" {
+		loaderConfig.ModelsDir = "./models"
+	}
+	loaderConfig.AllowDownload = os.Getenv("LLAMA_AUTO_DOWNLOAD") == "true"
+	loaderConfig.ModelURL = os.Getenv("LLAMA_MODEL_URL")
+	loaderConfig.RunStartupTest = true
+
+	// Create model loader
+	loader := llamaruntime.NewModelLoader(loaderConfig)
+
+	// Load the model and create client
+	loadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	client, err := loader.Load(loadCtx)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to load model: %w", err)
+	}
+
+	// Get model metadata for logging
+	if metadata := loader.Metadata(); metadata != nil {
+		logger.Info("Model loaded",
+			zap.String("name", metadata.Name),
+			zap.String("size", metadata.SizeHuman),
+			zap.Int("vocab_size", metadata.VocabSize),
+			zap.Int("context_size", metadata.ContextSize),
+			zap.Bool("startup_test_passed", metadata.StartupTestPassed),
+		)
+	}
+
+	// Start GPU monitoring if GPU is available
+	var gpuMonitor *llamaruntime.GPUMonitor
+	gpuResult := llamaruntime.DetectGPU()
+	if gpuResult.Available {
+		logger.Info("GPU detected for llamaruntime",
+			zap.Int("gpu_count", gpuResult.GPUCount),
+			zap.Int64("total_vram_bytes", gpuResult.TotalVRAM),
+		)
+
+		// Create GPU monitor with logging callback
+		gpuMonitorConfig := llamaruntime.DefaultGPUMonitorConfig()
+		gpuMonitorConfig.Interval = 30 * time.Second // Check every 30 seconds
+		gpuMonitorConfig.AlertThreshold = 90.0       // Alert at 90% VRAM usage
+		gpuMonitorConfig.Callback = func(info *llamaruntime.GPUMemoryInfo) {
+			logger.Debug("llamaruntime GPU memory",
+				zap.Int64("used_bytes", info.Used),
+				zap.Int64("total_bytes", info.Total),
+				zap.Float64("used_pct", info.UsedPct),
+			)
+		}
+		gpuMonitor = llamaruntime.NewGPUMonitor(gpuMonitorConfig)
+		gpuMonitor.Start(ctx)
+		logger.Info("llamaruntime GPU monitor started")
+	} else {
+		logger.Info("No GPU detected for llamaruntime, running in CPU mode")
+	}
+
+	// Create health checker
+	healthConfig := llamaruntime.DefaultHealthCheckerConfig()
+	healthConfig.Interval = 60 * time.Second     // Check every minute
+	healthConfig.MinVRAMFree = 512 * 1024 * 1024 // Alert if less than 512MB free
+	healthConfig.OnHealthy = func() {
+		logger.Debug("llamaruntime health check: healthy")
+	}
+	healthConfig.OnUnhealthy = func(reason string) {
+		logger.Warn("llamaruntime health check: unhealthy",
+			zap.String("reason", reason),
+		)
+	}
+
+	healthChecker := llamaruntime.NewHealthChecker(client, healthConfig)
+	healthChecker.Start(ctx)
+	logger.Info("llamaruntime health checker started")
+
+	return client, healthChecker, gpuMonitor, nil
 }
 
 // runStartupValidation performs comprehensive startup validation.
