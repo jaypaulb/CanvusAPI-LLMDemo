@@ -10,6 +10,7 @@
 #   --clean       Remove existing build directory before building
 #   --jobs N      Number of parallel build jobs (default: nproc)
 #   --output DIR  Output directory for built libraries (default: deps/llama.cpp/build)
+#   --no-install  Skip copying libraries to project lib/ directory
 #   --help        Show this help message
 #
 # Requirements:
@@ -30,6 +31,7 @@ readonly LLAMACPP_DIR="$PROJECT_ROOT/deps/llama.cpp"
 CLEAN_BUILD=false
 BUILD_JOBS=$(nproc 2>/dev/null || echo 4)
 OUTPUT_DIR="$LLAMACPP_DIR/build"
+INSTALL_TO_PROJECT=true  # Install to lib/ directory by default
 
 # Colors for output (disabled if not a terminal)
 if [[ -t 1 ]]; then
@@ -140,8 +142,10 @@ configure_cmake() {
     # Configure with CUDA support
     # LLAMA_CUBLAS is the legacy flag, newer versions use LLAMA_CUDA
     # We set both for compatibility
+    # BUILD_SHARED_LIBS=ON required for CGo bindings
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON \
         -DLLAMA_CUBLAS=ON \
         -DLLAMA_CUDA=ON \
         -DLLAMA_NATIVE=OFF \
@@ -193,6 +197,83 @@ copy_artifacts() {
     find "$OUTPUT_DIR" -maxdepth 1 \( -name "*.so" -o -name "*.dll" -o -name "*.dylib" -o -name "llama-server" -o -name "server" \) -exec ls -lh {} \; 2>/dev/null || true
 }
 
+install_to_project() {
+    if [[ "$INSTALL_TO_PROJECT" != "true" ]]; then
+        log_info "Skipping project installation (--no-install specified)"
+        return
+    fi
+
+    log_info "Installing llama.cpp to project directories..."
+
+    local lib_dir="$PROJECT_ROOT/lib"
+    mkdir -p "$lib_dir"
+
+    # Find and copy shared libraries to lib/ directory
+    # llama.cpp typically builds libllama.so (Linux), llama.dll (Windows), libllama.dylib (macOS)
+    local lib_count=0
+
+    # Search in common build output locations
+    local search_dirs=(
+        "$LLAMACPP_DIR/build"
+        "$LLAMACPP_DIR/build/src"
+        "$LLAMACPP_DIR/build/Release"
+        "$LLAMACPP_DIR/build/Debug"
+    )
+
+    for search_dir in "${search_dirs[@]}"; do
+        if [[ -d "$search_dir" ]]; then
+            # Linux shared library
+            for lib in "$search_dir"/libllama.so* "$search_dir"/libggml*.so*; do
+                if [[ -f "$lib" ]]; then
+                    cp -P "$lib" "$lib_dir/" 2>/dev/null || true
+                    ((lib_count++)) || true
+                    log_info "  Copied: $(basename "$lib")"
+                fi
+            done
+
+            # Windows DLL
+            for lib in "$search_dir"/llama.dll "$search_dir"/ggml*.dll; do
+                if [[ -f "$lib" ]]; then
+                    cp "$lib" "$lib_dir/"
+                    ((lib_count++)) || true
+                    log_info "  Copied: $(basename "$lib")"
+                fi
+            done
+
+            # macOS dynamic library
+            for lib in "$search_dir"/libllama.dylib* "$search_dir"/libggml*.dylib*; do
+                if [[ -f "$lib" ]]; then
+                    cp -P "$lib" "$lib_dir/" 2>/dev/null || true
+                    ((lib_count++)) || true
+                    log_info "  Copied: $(basename "$lib")"
+                fi
+            done
+        fi
+    done
+
+    if [[ $lib_count -eq 0 ]]; then
+        log_warn "No shared libraries found to install!"
+        log_warn "Build may have created static libraries instead."
+        log_warn "Check: $LLAMACPP_DIR/build/ for *.a files"
+        return 1
+    fi
+
+    log_success "Installed $lib_count library file(s) to: $lib_dir"
+
+    # Verify the critical library exists
+    if [[ -f "$lib_dir/libllama.so" ]] || [[ -f "$lib_dir/llama.dll" ]] || [[ -f "$lib_dir/libllama.dylib" ]]; then
+        log_success "llama library ready for CGo bindings"
+    else
+        log_warn "libllama shared library not found - CGo bindings may not work"
+        log_warn "Ensure llama.cpp was built with BUILD_SHARED_LIBS=ON"
+    fi
+
+    # List installed libraries
+    echo ""
+    log_info "Installed libraries in $lib_dir:"
+    ls -lh "$lib_dir"/*.so* "$lib_dir"/*.dll "$lib_dir"/*.dylib 2>/dev/null || true
+}
+
 main() {
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -208,6 +289,10 @@ main() {
             --output)
                 OUTPUT_DIR="$2"
                 shift 2
+                ;;
+            --no-install)
+                INSTALL_TO_PROJECT=false
+                shift
                 ;;
             --help|-h)
                 show_help
@@ -230,6 +315,7 @@ main() {
     configure_cmake
     build_project
     copy_artifacts
+    install_to_project
 
     echo ""
     log_success "llama.cpp build complete!"
@@ -237,6 +323,10 @@ main() {
     echo "Next steps:"
     echo "  - Server binary: $OUTPUT_DIR/llama-server (or server)"
     echo "  - Start server:  $OUTPUT_DIR/llama-server -m /path/to/model.gguf"
+    if [[ "$INSTALL_TO_PROJECT" == "true" ]]; then
+        echo "  - Libraries installed to: $PROJECT_ROOT/lib/"
+        echo "  - CGo bindings should now find libllama"
+    fi
     echo ""
 }
 

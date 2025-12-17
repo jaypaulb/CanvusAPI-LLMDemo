@@ -1,7 +1,20 @@
 # This directory contains compiled shared libraries for CGo integration.
 #
 # Expected contents after building:
-#   - stable-diffusion.dll (Windows)
-#   - libstable-diffusion.so (Linux)
 #
-# Build instructions: See deps/stable-diffusion.cpp/README.md
+# llama.cpp (for llamaruntime package):
+#   - libllama.so (Linux)
+#   - llama.dll (Windows)
+#   - libllama.dylib (macOS)
+#   - libggml*.so/dll/dylib (GGML backend libraries)
+#
+# stable-diffusion.cpp (for sdruntime package):
+#   - libstable-diffusion.so (Linux)
+#   - stable-diffusion.dll (Windows)
+#
+# Build instructions:
+#   - llama.cpp: ./scripts/build-llamacpp-cuda.sh
+#   - stable-diffusion.cpp: ./scripts/build-sd-cuda.sh
+#
+# Note: These libraries are not committed to git.
+# They must be built locally or downloaded for your platform.
