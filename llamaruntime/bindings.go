@@ -602,6 +602,41 @@ func detokenize(model *llamaModel, token C.llama_token) string {
 	return string(buf[:nBytes])
 }
 
+// batchSetToken sets the token at index i in the batch.
+// Uses unsafe pointer arithmetic to access the C array.
+func batchSetToken(batch *C.struct_llama_batch, i int, token C.llama_token) {
+	ptr := (*C.llama_token)(unsafe.Pointer(uintptr(unsafe.Pointer(batch.token)) + uintptr(i)*unsafe.Sizeof(C.llama_token(0))))
+	*ptr = token
+}
+
+// batchSetPos sets the position at index i in the batch.
+func batchSetPos(batch *C.struct_llama_batch, i int, pos C.llama_pos) {
+	ptr := (*C.llama_pos)(unsafe.Pointer(uintptr(unsafe.Pointer(batch.pos)) + uintptr(i)*unsafe.Sizeof(C.llama_pos(0))))
+	*ptr = pos
+}
+
+// batchSetNSeqID sets the number of sequence IDs at index i in the batch.
+func batchSetNSeqID(batch *C.struct_llama_batch, i int, nSeqID C.int32_t) {
+	ptr := (*C.int32_t)(unsafe.Pointer(uintptr(unsafe.Pointer(batch.n_seq_id)) + uintptr(i)*unsafe.Sizeof(C.int32_t(0))))
+	*ptr = nSeqID
+}
+
+// batchSetSeqID sets the sequence ID at index i, slot j in the batch.
+func batchSetSeqID(batch *C.struct_llama_batch, i int, j int, seqID C.llama_seq_id) {
+	// seq_id is **llama_seq_id, so we need to access seq_id[i][j]
+	// First get the pointer to the i-th element of the outer array
+	outerPtr := (**C.llama_seq_id)(unsafe.Pointer(uintptr(unsafe.Pointer(batch.seq_id)) + uintptr(i)*unsafe.Sizeof((*C.llama_seq_id)(nil))))
+	// Then access the j-th element of the inner array
+	innerPtr := (*C.llama_seq_id)(unsafe.Pointer(uintptr(unsafe.Pointer(*outerPtr)) + uintptr(j)*unsafe.Sizeof(C.llama_seq_id(0))))
+	*innerPtr = seqID
+}
+
+// batchSetLogits sets the logits flag at index i in the batch.
+func batchSetLogits(batch *C.struct_llama_batch, i int, logits C.int8_t) {
+	ptr := (*C.int8_t)(unsafe.Pointer(uintptr(unsafe.Pointer(batch.logits)) + uintptr(i)*unsafe.Sizeof(C.int8_t(0))))
+	*ptr = logits
+}
+
 // inferText performs text inference on the given prompt.
 // It returns the generated text and any error encountered.
 // The context is used for cancellation and timeout.
@@ -641,14 +676,14 @@ func inferText(ctx context.Context, llamaCtx *llamaContext, prompt string, maxTo
 
 	// Setup batch for prompt
 	for i, token := range tokens {
-		llamaCtx.batch.token[i] = token
-		llamaCtx.batch.pos[i] = C.llama_pos(i)
-		llamaCtx.batch.n_seq_id[i] = 1
-		llamaCtx.batch.seq_id[i][0] = 0
-		llamaCtx.batch.logits[i] = 0
+		batchSetToken(&llamaCtx.batch, i, token)
+		batchSetPos(&llamaCtx.batch, i, C.llama_pos(i))
+		batchSetNSeqID(&llamaCtx.batch, i, 1)
+		batchSetSeqID(&llamaCtx.batch, i, 0, 0)
+		batchSetLogits(&llamaCtx.batch, i, 0)
 	}
 	// Only compute logits for last prompt token
-	llamaCtx.batch.logits[len(tokens)-1] = 1
+	batchSetLogits(&llamaCtx.batch, len(tokens)-1, 1)
 	llamaCtx.batch.n_tokens = C.int32_t(len(tokens))
 
 	// Decode prompt
@@ -696,11 +731,11 @@ func inferText(ctx context.Context, llamaCtx *llamaContext, prompt string, maxTo
 		// Prepare next batch
 		llamaCtx.mu.Lock()
 
-		llamaCtx.batch.token[0] = newToken
-		llamaCtx.batch.pos[0] = C.llama_pos(nPrompt + i)
-		llamaCtx.batch.n_seq_id[0] = 1
-		llamaCtx.batch.seq_id[0][0] = 0
-		llamaCtx.batch.logits[0] = 1
+		batchSetToken(&llamaCtx.batch, 0, newToken)
+		batchSetPos(&llamaCtx.batch, 0, C.llama_pos(nPrompt+i))
+		batchSetNSeqID(&llamaCtx.batch, 0, 1)
+		batchSetSeqID(&llamaCtx.batch, 0, 0, 0)
+		batchSetLogits(&llamaCtx.batch, 0, 1)
 		llamaCtx.batch.n_tokens = 1
 
 		// Decode
