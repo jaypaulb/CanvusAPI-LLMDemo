@@ -53,6 +53,7 @@ generations/
 
 # Backup files
 *.bak
+*.backup
 *~
 
 # Cursor rules
@@ -75,3 +76,6 @@ models/*.ckpt
 
 # Build dependencies (large repos - cloned via build scripts)
 deps/
+
+# Beads autonomous state (ephemeral agent data)
+.beads/autonomous-state/
