@@ -25,7 +25,6 @@ import (
 	"go_backend/ocrprocessor"
 	"go_backend/pdfprocessor"
 
-	"github.com/google/uuid"
 	"github.com/ledongthuc/pdf"
 	"github.com/sashabaranov/go-openai"
 	"go.uber.org/zap"
@@ -96,17 +95,14 @@ type GoogleVisionResponse struct {
 	} `json:"responses"`
 }
 
-// generateCorrelationID creates a unique ID for request tracing
+// generateCorrelationID creates a unique ID for request tracing (delegated to handlers package)
 func generateCorrelationID() string {
-	return uuid.New().String()[:8]
+	return handlers.GenerateCorrelationID()
 }
 
-// truncateText truncates a text to a specified length
+// truncateText truncates a text to a specified length (delegated to handlers package)
 func truncateText(text string, length int) string {
-	if len(text) > length {
-		return text[:length]
-	}
-	return text
+	return handlers.TruncateText(text, length)
 }
 
 // recordProcessingHistory records an AI processing operation to the database.
@@ -265,14 +261,14 @@ type noteProcessingContext struct {
 	update        Update
 }
 
-// extractAIPrompt extracts the prompt text from a note, removing the {{ }} markers.
+// extractAIPrompt extracts the prompt text from a note (delegated to handlers package)
 func extractAIPrompt(noteText string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(noteText, "{{", ""), "}}", "")
+	return handlers.ExtractAIPrompt(noteText)
 }
 
-// hasAITrigger checks if the note text contains an AI trigger ({{ }}).
+// hasAITrigger checks if the note text contains an AI trigger (delegated to handlers package)
 func hasAITrigger(text string) bool {
-	return strings.Contains(text, "{{") && strings.Contains(text, "}}")
+	return handlers.HasAITrigger(text)
 }
 
 // processAIResponseType handles the AI response based on its type (text or image).
@@ -620,10 +616,9 @@ func logNoteCreation(log *logging.Logger, triggeringUpdate Update, size handlers
 		zap.Float64("scale", scale))
 }
 
-// isAzureOpenAIEndpoint checks if the endpoint is an Azure OpenAI endpoint
+// isAzureOpenAIEndpoint checks if the endpoint is an Azure OpenAI endpoint (delegated to handlers package)
 func isAzureOpenAIEndpoint(endpoint string) bool {
-	return strings.Contains(strings.ToLower(endpoint), "openai.azure.com") ||
-		strings.Contains(strings.ToLower(endpoint), "cognitiveservices.azure.com")
+	return handlers.IsAzureOpenAIEndpoint(endpoint)
 }
 
 // processAIImage generates and uploads an image from the AI's response using imagegen package
@@ -1207,14 +1202,9 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 		zap.Duration("duration", time.Since(start)))
 }
 
-// getPDFChunkPrompt returns the system message for PDF chunk analysis
+// getPDFChunkPrompt returns the system message for PDF chunk analysis (delegated to handlers package)
 func getPDFChunkPrompt() string {
-	return `You are analyzing a section of a document. Focus on:
-1. Main ideas and key points
-2. Important details and evidence
-3. Connections to other sections
-4. Technical accuracy and academic tone
-Format your response as: {"type": "text", "content": "your analysis"}`
+	return handlers.PDFChunkPrompt()
 }
 
 // handlePDFPrecis generates a summary of a PDF widget using pdfprocessor package
@@ -1465,40 +1455,14 @@ func extractPDFText(pdfPath string, log *logging.Logger) (string, error) {
 	return extractedText, nil
 }
 
+// splitIntoChunks splits text into chunks (delegated to handlers package)
 func splitIntoChunks(text string, maxChunkSize int) []string {
-	var chunks []string
-	paragraphs := strings.Split(text, "\n\n")
-
-	var currentChunk strings.Builder
-	currentSize := 0
-
-	for _, para := range paragraphs {
-		paraSize := len(para)
-
-		if currentSize+paraSize > maxChunkSize {
-			if currentChunk.Len() > 0 {
-				chunks = append(chunks, currentChunk.String())
-				currentChunk.Reset()
-				currentSize = 0
-			}
-		}
-
-		currentChunk.WriteString(para)
-		currentChunk.WriteString("\n\n")
-		currentSize += paraSize + 2
-	}
-
-	if currentChunk.Len() > 0 {
-		chunks = append(chunks, currentChunk.String())
-	}
-
-	return chunks
+	return handlers.SplitIntoChunks(text, maxChunkSize)
 }
 
-// estimateTokenCount provides a rough estimate of tokens in a text
-// Using average of 4 characters per token as a rough approximation
+// estimateTokenCount provides a rough estimate of tokens in a text (delegated to handlers package)
 func estimateTokenCount(text string) int {
-	return len(text) / 4
+	return handlers.EstimateTokenCount(text)
 }
 
 // handleCanvusPrecis processes Canvus widget summaries
