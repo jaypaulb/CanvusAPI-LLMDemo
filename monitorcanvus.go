@@ -15,6 +15,7 @@ import (
 	"go_backend/db"
 	"go_backend/imagegen"
 	"go_backend/logging"
+	"go_backend/metrics"
 
 	"go.uber.org/zap"
 )
@@ -30,6 +31,8 @@ type Monitor struct {
 	widgetsMux       sync.RWMutex
 	imagegenProc     *imagegen.Processor
 	imagegenProcMux  sync.RWMutex
+	metricsStore     metrics.MetricsCollector
+	metricsStoreMux  sync.RWMutex
 }
 
 // WidgetState tracks widget information
@@ -73,6 +76,22 @@ func (m *Monitor) SetImagegenProcessor(proc *imagegen.Processor) {
 	defer m.imagegenProcMux.Unlock()
 	m.imagegenProc = proc
 	m.logger.Info("imagegen processor set for direct image prompt handling")
+}
+
+// SetMetricsStore sets the metrics recorder for task tracking.
+// This allows the Monitor to record task completion metrics for the dashboard.
+func (m *Monitor) SetMetricsStore(store metrics.MetricsCollector) {
+	m.metricsStoreMux.Lock()
+	defer m.metricsStoreMux.Unlock()
+	m.metricsStore = store
+	m.logger.Info("metrics store set for task tracking")
+}
+
+// getMetricsStore returns the metrics recorder if available.
+func (m *Monitor) getMetricsStore() metrics.MetricsCollector {
+	m.metricsStoreMux.RLock()
+	defer m.metricsStoreMux.RUnlock()
+	return m.metricsStore
 }
 
 // getImagegenProcessor returns the imagegen processor if available.

@@ -16,8 +16,10 @@ import (
 	"go_backend/db"
 	"go_backend/imagegen"
 	"go_backend/logging"
+	"go_backend/metrics"
 	"go_backend/sdruntime"
 	"go_backend/shutdown"
+	"go_backend/webui"
 	"go_backend/webui/auth"
 
 	"github.com/joho/godotenv"
@@ -187,8 +189,41 @@ func main() {
 		})
 	}
 
+	// Initialize MetricsStore for dashboard metrics
+	metricsConfig := metrics.StoreConfig{
+		TaskHistoryCapacity: 100,
+		Version:             "1.0.0",
+	}
+	metricsStore := metrics.NewMetricsStore(metricsConfig, time.Now())
+	logger.Info("MetricsStore initialized")
+
+	// Initialize GPUCollector for GPU metrics
+	gpuConfig := metrics.DefaultGPUCollectorConfig()
+	gpuCollector := metrics.NewGPUCollector(gpuConfig, func(gpuMetrics metrics.GPUMetrics) {
+		// Update metrics store with GPU data
+		metricsStore.UpdateGPUMetrics(gpuMetrics)
+	})
+	logger.Info("GPUCollector initialized",
+		zap.Duration("interval", gpuConfig.CollectionInterval),
+		zap.Int("history_size", gpuConfig.HistorySize),
+	)
+
+	// Start GPU collector goroutine (uses internal context)
+	gpuCollector.Start()
+
+	// Register GPU collector shutdown (priority 25 - after web server)
+	shutdownManager.Register("gpu-collector", 25, func(ctx context.Context) error {
+		logger.Info("Stopping GPU collector...")
+		gpuCollector.Stop()
+		logger.Info("GPU collector stopped")
+		return nil
+	})
+
 	// Start monitoring with context from shutdown manager
 	monitor := NewMonitor(client, config, logger, repository)
+
+	// Wire metrics store into monitor for task recording
+	monitor.SetMetricsStore(metricsStore)
 
 	// Wire in the imagegen processor if available
 	if imageProcessor != nil {
@@ -198,23 +233,51 @@ func main() {
 
 	go monitor.Start(shutdownManager.Context())
 
-	// Initialize and start web UI server
-	httpServer, err := setupWebServer(config, logger)
+	// Initialize WebUIServer with the real components
+	serverConfig := webui.ServerConfig{
+		Port:            config.Port,
+		Host:            "",  // Bind to all interfaces
+		ReadTimeout:     DefaultReadTimeout,
+		WriteTimeout:    DefaultWriteTimeout,
+		IdleTimeout:     DefaultIdleTimeout,
+		ShutdownTimeout: DefaultShutdownTimeout,
+		StaticConfig:    webui.DefaultStaticAssetConfig(),
+		LogSkipPaths:    []string{"/health", "/api/status"},
+		VersionInfo: webui.VersionInfo{
+			Version: "1.0.0",
+		},
+	}
+
+	// Create auth provider
+	authProvider, err := createAuthProvider(config, logger)
+	if err != nil {
+		logger.Fatal("Failed to create auth provider", zap.Error(err))
+	}
+
+	// Create WebUIServer with all dependencies wired together
+	webServer, err := webui.NewServer(
+		serverConfig,
+		metricsStore,
+		gpuCollector,
+		authProvider,
+		logger.Zap(),
+	)
 	if err != nil {
 		logger.Fatal("Failed to setup web server", zap.Error(err))
 	}
+	logger.Info("WebUIServer initialized",
+		zap.Int("port", config.Port),
+		zap.Bool("auth_enabled", authProvider != nil),
+	)
 
-	// Register HTTP server shutdown (priority 20 - service cleanup)
-	shutdownManager.Register("http-server", 20, func(ctx context.Context) error {
-		logger.Info("Shutting down web server...")
-		shutdownCtx, cancel := context.WithTimeout(ctx, DefaultShutdownTimeout)
-		defer cancel()
-
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Web server shutdown error", zap.Error(err))
+	// Register WebUI server shutdown (priority 20 - service cleanup)
+	shutdownManager.Register("webui-server", 20, func(ctx context.Context) error {
+		logger.Info("Shutting down WebUI server...")
+		if err := webServer.Shutdown(ctx); err != nil {
+			logger.Error("WebUI server shutdown error", zap.Error(err))
 			return err
 		}
-		logger.Info("Web server shutdown complete")
+		logger.Info("WebUI server shutdown complete")
 		return nil
 	})
 
@@ -239,11 +302,11 @@ func main() {
 	// Start web server in a goroutine
 	serverErrChan := make(chan error, 1)
 	go func() {
-		logger.Info("Starting web UI server",
-			zap.Int("port", config.Port),
+		logger.Info("Starting WebUI server",
+			zap.String("addr", webServer.Addr()),
 			zap.String("login_url", fmt.Sprintf("http://localhost:%d/login", config.Port)),
 		)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := webServer.Start(shutdownManager.Context()); err != nil && err != http.ErrServerClosed {
 			serverErrChan <- err
 		}
 	}()
@@ -300,185 +363,49 @@ var signalNotify = func(c chan<- os.Signal, sig ...os.Signal) {
 	signal.Notify(c, sig...)
 }
 
-// setupWebServer creates and configures the HTTP server with authentication.
-// This function:
-//  1. Initializes the AuthMiddleware with WEBUI_PWD
-//  2. Registers /login and /logout routes
-//  3. Wraps protected routes (/, /api/*) with auth middleware
-//
-// Returns the configured http.Server and any initialization error.
-func setupWebServer(config *core.Config, logger *logging.Logger) (*http.Server, error) {
-	// Initialize authentication middleware with password from config
+// authProviderAdapter adapts auth.AuthMiddleware to implement webui.AuthProvider.
+// This allows the WebUIServer to remain decoupled from the auth package.
+type authProviderAdapter struct {
+	middleware *auth.AuthMiddleware
+}
+
+// Middleware wraps an http.Handler with authentication.
+func (a *authProviderAdapter) Middleware(next http.Handler) http.Handler {
+	return a.middleware.Middleware(next)
+}
+
+// MiddlewareFunc wraps an http.HandlerFunc with authentication.
+func (a *authProviderAdapter) MiddlewareFunc(next http.HandlerFunc) http.HandlerFunc {
+	return a.middleware.RequireAuth(next)
+}
+
+// LoginHandler returns a handler for the login page.
+func (a *authProviderAdapter) LoginHandler() http.HandlerFunc {
+	return auth.LoginHandler(a.middleware)
+}
+
+// LogoutHandler returns a handler for logout.
+func (a *authProviderAdapter) LogoutHandler() http.HandlerFunc {
+	return auth.LogoutHandler(a.middleware)
+}
+
+// createAuthProvider creates an authentication provider from the configuration.
+// Returns nil if no password is configured (unauthenticated mode).
+func createAuthProvider(config *core.Config, logger *logging.Logger) (webui.AuthProvider, error) {
+	// Check if authentication is configured
+	if config.WebUIPassword == "" {
+		logger.Warn("WebUI password not configured, running in unauthenticated mode")
+		return nil, nil
+	}
+
+	// Create authentication middleware
 	authMiddleware, err := auth.NewAuthMiddleware(config.WebUIPassword, logger.Zap())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth middleware: %w", err)
 	}
 
 	logger.Info("Auth middleware initialized")
-
-	// Create HTTP mux for routing
-	mux := http.NewServeMux()
-
-	// Register public routes (no authentication required)
-	// Login handler handles both GET (render form) and POST (authenticate)
-	mux.HandleFunc("/login", auth.LoginHandler(authMiddleware))
-
-	// Logout handler clears session and redirects to login
-	mux.HandleFunc("/logout", auth.LogoutHandler(authMiddleware))
-
-	// Register protected routes (require authentication)
-	// Root redirects to dashboard or serves dashboard page
-	mux.Handle("/", authMiddleware.Middleware(http.HandlerFunc(dashboardHandler)))
-
-	// API endpoints - all protected by auth middleware
-	mux.Handle("/api/status", authMiddleware.Middleware(http.HandlerFunc(apiStatusHandler)))
-	mux.Handle("/api/canvases", authMiddleware.Middleware(http.HandlerFunc(apiCanvasesHandler)))
-	mux.Handle("/api/tasks", authMiddleware.Middleware(http.HandlerFunc(apiTasksHandler)))
-	mux.Handle("/api/metrics", authMiddleware.Middleware(http.HandlerFunc(apiMetricsHandler)))
-	mux.Handle("/api/gpu", authMiddleware.Middleware(http.HandlerFunc(apiGPUHandler)))
-
-	// Create HTTP server with timeouts
-	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", config.Port),
-		Handler:      mux,
-		ReadTimeout:  DefaultReadTimeout,
-		WriteTimeout: DefaultWriteTimeout,
-		IdleTimeout:  DefaultIdleTimeout,
-	}
-
-	return server, nil
-}
-
-// dashboardHandler serves the main dashboard page.
-// This is a placeholder that will be replaced with the full dashboard implementation.
-func dashboardHandler(w http.ResponseWriter, r *http.Request) {
-	// Only handle requests for the root path exactly
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CanvusLocalLLM - Dashboard</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            color: #ffffff;
-            min-height: 100vh;
-            margin: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container {
-            text-align: center;
-            padding: 48px;
-        }
-        h1 {
-            font-size: 2.5rem;
-            margin-bottom: 1rem;
-            background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        p {
-            color: rgba(255, 255, 255, 0.7);
-            margin-bottom: 2rem;
-        }
-        .status {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            padding: 16px 24px;
-            display: inline-block;
-            margin-bottom: 2rem;
-        }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            background: #22c55e;
-            border-radius: 50%;
-            margin-right: 8px;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .logout-link {
-            color: #60a5fa;
-            text-decoration: none;
-            padding: 8px 16px;
-            border: 1px solid rgba(96, 165, 250, 0.5);
-            border-radius: 6px;
-            transition: all 0.2s;
-        }
-        .logout-link:hover {
-            background: rgba(96, 165, 250, 0.1);
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>CanvusLocalLLM Dashboard</h1>
-        <p>Real-time monitoring dashboard</p>
-        <div class="status">
-            <span class="status-indicator"></span>
-            System Running
-        </div>
-        <p>Full dashboard coming soon...</p>
-        <a href="/logout" class="logout-link">Logout</a>
-    </div>
-</body>
-</html>`)
-}
-
-// apiStatusHandler returns the current system status.
-// Placeholder implementation - will be replaced with real metrics.
-func apiStatusHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"status":"running","version":"1.0.0"}`)
-}
-
-// apiCanvasesHandler returns the list of monitored canvases.
-// Placeholder implementation - will be replaced with real data.
-func apiCanvasesHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"canvases":[]}`)
-}
-
-// apiTasksHandler returns recent AI processing tasks.
-// Placeholder implementation - will be replaced with real data.
-func apiTasksHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"tasks":[]}`)
-}
-
-// apiMetricsHandler returns aggregated metrics.
-// Placeholder implementation - will be replaced with real data.
-func apiMetricsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"metrics":{}}`)
-}
-
-// apiGPUHandler returns GPU utilization stats.
-// Placeholder implementation - will be replaced with real data.
-func apiGPUHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"gpu":{"available":false}}`)
+	return &authProviderAdapter{middleware: authMiddleware}, nil
 }
 
 // initializeSDRuntime initializes the Stable Diffusion runtime and image processor.
