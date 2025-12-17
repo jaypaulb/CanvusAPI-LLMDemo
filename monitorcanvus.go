@@ -33,6 +33,8 @@ type Monitor struct {
 	imagegenProcMux  sync.RWMutex
 	metricsStore     metrics.MetricsCollector
 	metricsStoreMux  sync.RWMutex
+	taskBroadcaster  metrics.TaskBroadcaster
+	broadcasterMux   sync.RWMutex
 }
 
 // WidgetState tracks widget information
@@ -94,11 +96,84 @@ func (m *Monitor) getMetricsStore() metrics.MetricsCollector {
 	return m.metricsStore
 }
 
+// SetTaskBroadcaster sets the broadcaster for real-time task updates to WebSocket clients.
+// This allows the Monitor to broadcast task start/complete events for the dashboard.
+func (m *Monitor) SetTaskBroadcaster(broadcaster metrics.TaskBroadcaster) {
+	m.broadcasterMux.Lock()
+	defer m.broadcasterMux.Unlock()
+	m.taskBroadcaster = broadcaster
+	m.logger.Info("task broadcaster set for real-time updates")
+}
+
+// getTaskBroadcaster returns the task broadcaster if available.
+func (m *Monitor) getTaskBroadcaster() metrics.TaskBroadcaster {
+	m.broadcasterMux.RLock()
+	defer m.broadcasterMux.RUnlock()
+	return m.taskBroadcaster
+}
+
 // getImagegenProcessor returns the imagegen processor if available.
 func (m *Monitor) getImagegenProcessor() *imagegen.Processor {
 	m.imagegenProcMux.RLock()
 	defer m.imagegenProcMux.RUnlock()
 	return m.imagegenProc
+}
+
+// RecordTaskStart records that a task has started processing and broadcasts the update.
+// It records to MetricsStore (if available) and broadcasts via TaskBroadcaster (if available).
+// Returns the TaskRecord that should be updated on completion.
+func (m *Monitor) RecordTaskStart(taskID, taskType, canvasID string) metrics.TaskRecord {
+	record := metrics.TaskRecord{
+		ID:        taskID,
+		Type:      taskType,
+		CanvasID:  canvasID,
+		Status:    metrics.TaskStatusProcessing,
+		StartTime: time.Now(),
+	}
+
+	// Broadcast the "processing" status
+	if broadcaster := m.getTaskBroadcaster(); broadcaster != nil {
+		broadcaster.BroadcastTaskUpdateFromMetrics(metrics.TaskBroadcastData{
+			TaskID:   record.ID,
+			TaskType: record.Type,
+			Status:   record.Status,
+			CanvasID: record.CanvasID,
+		})
+	}
+
+	return record
+}
+
+// RecordTaskComplete records that a task has completed and broadcasts the update.
+// The record parameter should be the one returned from RecordTaskStart.
+// If errMsg is non-empty, the task is marked as failed; otherwise it's marked as successful.
+func (m *Monitor) RecordTaskComplete(record metrics.TaskRecord, errMsg string) {
+	record.EndTime = time.Now()
+	record.Duration = record.EndTime.Sub(record.StartTime)
+
+	if errMsg != "" {
+		record.Status = metrics.TaskStatusError
+		record.ErrorMsg = errMsg
+	} else {
+		record.Status = metrics.TaskStatusSuccess
+	}
+
+	// Record to metrics store
+	if store := m.getMetricsStore(); store != nil {
+		store.RecordTask(record)
+	}
+
+	// Broadcast the completion status
+	if broadcaster := m.getTaskBroadcaster(); broadcaster != nil {
+		broadcaster.BroadcastTaskUpdateFromMetrics(metrics.TaskBroadcastData{
+			TaskID:   record.ID,
+			TaskType: record.Type,
+			Status:   record.Status,
+			CanvasID: record.CanvasID,
+			Duration: record.Duration,
+			Error:    record.ErrorMsg,
+		})
+	}
 }
 
 // Done returns a channel that's closed when monitoring is complete

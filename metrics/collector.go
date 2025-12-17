@@ -2,6 +2,8 @@
 // This is a molecule that composes the atom-level types from types.go.
 package metrics
 
+import "time"
+
 // MetricsCollector defines the interface for collecting metrics from various sources.
 // This molecule aggregates TaskRecord, GPUMetrics, and CanvasStatus atoms to provide
 // a unified interface for metric collection.
@@ -46,4 +48,30 @@ type MetricsCollector interface {
 	// GetSystemStatus returns the overall system health status.
 	// Composes SystemStatus atom from collected metrics.
 	GetSystemStatus() SystemStatus
+}
+
+// TaskBroadcaster defines the interface for broadcasting task updates to connected clients.
+// This allows the Monitor to send real-time task status updates without depending on webui package.
+// The webui.WebSocketBroadcaster implements this interface via BroadcastTaskUpdateFromMetrics.
+type TaskBroadcaster interface {
+	// BroadcastTaskUpdateFromMetrics sends a task status update to all connected WebSocket clients.
+	// The data should contain task ID, type, status, and optional duration/error.
+	BroadcastTaskUpdateFromMetrics(data TaskBroadcastData)
+}
+
+// TaskBroadcastData contains the information needed for a task broadcast.
+// This is a minimal struct that can be converted to webui.TaskUpdateData.
+type TaskBroadcastData struct {
+	// TaskID is the unique identifier for the task
+	TaskID string
+	// TaskType identifies the kind of task (note, pdf, image, canvas_analysis, handwriting)
+	TaskType string
+	// Status is the current state (processing, success, error)
+	Status string
+	// CanvasID identifies which canvas this task belongs to
+	CanvasID string
+	// Duration is how long the task took (only set on completion)
+	Duration time.Duration
+	// Error contains error details if Status is "error"
+	Error string
 }

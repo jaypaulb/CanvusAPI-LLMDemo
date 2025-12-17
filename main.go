@@ -270,6 +270,14 @@ func main() {
 		zap.Bool("auth_enabled", authProvider != nil),
 	)
 
+	// Wire WebSocket broadcaster into monitor for real-time task updates
+	if broadcaster := webServer.GetBroadcaster(); broadcaster != nil {
+		monitor.SetTaskBroadcaster(broadcaster)
+		// Also wire into handlers.go for direct task recording
+		SetDashboardMetrics(metricsStore, broadcaster)
+		logger.Info("Task broadcaster wired for real-time dashboard updates")
+	}
+
 	// Register WebUI server shutdown (priority 20 - service cleanup)
 	shutdownManager.Register("webui-server", 20, func(ctx context.Context) error {
 		logger.Info("Shutting down WebUI server...")

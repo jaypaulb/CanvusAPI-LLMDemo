@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"go_backend/metrics"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -452,3 +454,22 @@ func (b *WebSocketBroadcaster) BroadcastSystemStatus(data SystemStatusData) {
 func (b *WebSocketBroadcaster) BroadcastError(code, message string) {
 	b.BroadcastMessage(NewErrorMessage(code, message))
 }
+
+// BroadcastTaskUpdateFromMetrics broadcasts a task update from metrics.TaskBroadcastData.
+// This method implements the metrics.TaskBroadcaster interface, allowing the Monitor
+// to broadcast task updates without depending directly on the webui package.
+func (b *WebSocketBroadcaster) BroadcastTaskUpdateFromMetrics(data metrics.TaskBroadcastData) {
+	b.BroadcastTaskUpdate(TaskUpdateData{
+		TaskID:   data.TaskID,
+		TaskType: data.TaskType,
+		Status:   data.Status,
+		CanvasID: data.CanvasID,
+		Duration: data.Duration,
+		Error:    data.Error,
+	})
+}
+
+// Ensure WebSocketBroadcaster implements metrics.TaskBroadcaster
+// This is a compile-time check via a type assertion comment.
+// Note: We use an adapter to avoid changing the existing BroadcastTaskUpdate signature.
+// The actual interface satisfaction is via BroadcastTaskUpdateFromMetrics.

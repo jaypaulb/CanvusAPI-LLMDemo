@@ -22,6 +22,7 @@ import (
 	"go_backend/handlers"
 	"go_backend/imagegen"
 	"go_backend/logging"
+	"go_backend/metrics"
 	"go_backend/ocrprocessor"
 	"go_backend/pdfprocessor"
 
@@ -68,7 +69,85 @@ var (
 		errors             int64
 		processingDuration time.Duration
 	}
+
+	// Metrics integration for dashboard
+	dashboardMetricsStore      metrics.MetricsCollector
+	dashboardTaskBroadcaster   metrics.TaskBroadcaster
+	dashboardMetricsMux        sync.RWMutex
 )
+
+// SetDashboardMetrics sets the metrics store and broadcaster for handler metrics integration.
+// This enables handlers to record task starts/completions for the dashboard.
+func SetDashboardMetrics(store metrics.MetricsCollector, broadcaster metrics.TaskBroadcaster) {
+	dashboardMetricsMux.Lock()
+	defer dashboardMetricsMux.Unlock()
+	dashboardMetricsStore = store
+	dashboardTaskBroadcaster = broadcaster
+}
+
+// recordHandlerTaskStart records that a handler task has started processing.
+// Returns a TaskRecord that should be passed to recordHandlerTaskComplete.
+func recordHandlerTaskStart(taskID, taskType, canvasID string) metrics.TaskRecord {
+	record := metrics.TaskRecord{
+		ID:        taskID,
+		Type:      taskType,
+		CanvasID:  canvasID,
+		Status:    metrics.TaskStatusProcessing,
+		StartTime: time.Now(),
+	}
+
+	// Broadcast the "processing" status
+	dashboardMetricsMux.RLock()
+	broadcaster := dashboardTaskBroadcaster
+	dashboardMetricsMux.RUnlock()
+
+	if broadcaster != nil {
+		broadcaster.BroadcastTaskUpdateFromMetrics(metrics.TaskBroadcastData{
+			TaskID:   record.ID,
+			TaskType: record.Type,
+			Status:   record.Status,
+			CanvasID: record.CanvasID,
+		})
+	}
+
+	return record
+}
+
+// recordHandlerTaskComplete records that a handler task has completed.
+// If errMsg is non-empty, the task is marked as failed; otherwise successful.
+func recordHandlerTaskComplete(record metrics.TaskRecord, errMsg string) {
+	record.EndTime = time.Now()
+	record.Duration = record.EndTime.Sub(record.StartTime)
+
+	if errMsg != "" {
+		record.Status = metrics.TaskStatusError
+		record.ErrorMsg = errMsg
+	} else {
+		record.Status = metrics.TaskStatusSuccess
+	}
+
+	dashboardMetricsMux.RLock()
+	store := dashboardMetricsStore
+	broadcaster := dashboardTaskBroadcaster
+	dashboardMetricsMux.RUnlock()
+
+	// Record to metrics store
+	if store != nil {
+		store.RecordTask(record)
+	}
+
+	// Broadcast the completion status
+	if broadcaster != nil {
+		broadcaster.BroadcastTaskUpdateFromMetrics(metrics.TaskBroadcastData{
+			TaskID:   record.ID,
+			TaskType: record.Type,
+			Status:   record.Status,
+			CanvasID: record.CanvasID,
+			Duration: record.Duration,
+			Error:    record.ErrorMsg,
+		})
+	}
+}
 
 // Add this struct for the Vision API request
 type GoogleVisionRequest struct {
@@ -192,12 +271,16 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 	}
 	log.Info("processing AI trigger", zap.String("text_preview", truncateText(noteText, 30)))
 
+	// Record task start for dashboard metrics
+	npc.taskRecord = recordHandlerTaskStart(npc.correlationID, metrics.TaskTypeNote, config.CanvasID)
+
 	// Mark as processing
 	if err := updateNoteWithRetry(client, noteID, map[string]interface{}{
 		"text": npc.baseText + "\n\n processing...",
 	}, config, log); err != nil {
 		log.Error("failed to mark note as processing", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(npc.taskRecord, err.Error())
 		return
 	}
 
@@ -231,6 +314,7 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 			log.Error("failed to create error note", zap.Error(err))
 		}
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(npc.taskRecord, "failed to parse AI response: "+err.Error())
 		return
 	}
 
@@ -252,6 +336,7 @@ type noteProcessingContext struct {
 	correlationID string
 	noteID        string
 	baseText      string
+	taskRecord    metrics.TaskRecord // For dashboard metrics
 	aiPrompt      string
 	start         time.Time
 	client        *canvusapi.Client
@@ -308,9 +393,10 @@ func recordNoteSuccess(npc *noteProcessingContext, rawResponse string, promptTok
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(npc.start)
 	metricsMutex.Unlock()
+	recordHandlerTaskComplete(npc.taskRecord, "") // Empty string = success
 }
 
-// recordNoteError records failed note processing to the database.
+// recordNoteError records failed note processing to the database and dashboard metrics.
 func recordNoteError(npc *noteProcessingContext, err error) {
 	recordProcessingHistory(
 		npc.ctx, npc.repo, npc.correlationID, npc.config.CanvasID, npc.noteID,
@@ -319,6 +405,7 @@ func recordNoteError(npc *noteProcessingContext, err error) {
 		"error", err.Error(), npc.log,
 	)
 	atomic.AddInt64(&handlerMetrics.errors, 1)
+	recordHandlerTaskComplete(npc.taskRecord, err.Error())
 }
 
 // handleNoteCreationError handles errors that occur during note response creation.
@@ -328,6 +415,7 @@ func handleNoteCreationError(npc *noteProcessingContext, err error) {
 	errorContent := fmt.Sprintf("# AI Image Generation Error\n\n Failed to generate image for your request.\n\n**Error Details:** %v", err)
 	createNoteFromResponse(errorContent, npc.noteID, npc.update, true, npc.client, npc.config, npc.log)
 	clearProcessingStatus(npc.client, npc.noteID, npc.baseText, npc.config, npc.log)
+	recordHandlerTaskComplete(npc.taskRecord, err.Error())
 }
 
 // updateNoteWithRetry attempts to update a note with retries
@@ -987,6 +1075,10 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	)
 
 	start := time.Now()
+
+	// Record task start for dashboard metrics
+	taskRecord := recordHandlerTaskStart(correlationID, metrics.TaskTypeHandwriting, config.CanvasID)
+
 	downloadsMutex.Lock()
 	defer downloadsMutex.Unlock()
 
@@ -1004,6 +1096,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	if err != nil {
 		log.Error("failed to create processing note", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return // Keep snapshot
 	}
 
@@ -1080,6 +1173,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 			"text": " Failed to download image after multiple attempts.\nClick the snapshot again to retry.",
 		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, downloadErr.Error())
 		return // Keep snapshot
 	}
 
@@ -1091,6 +1185,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 			"text": " Failed to read image data.\nClick the snapshot again to retry.",
 		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		os.Remove(downloadPath)
 		return // Keep snapshot
 	}
@@ -1136,6 +1231,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 			"text": errorMessage,
 		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		os.Remove(downloadPath)
 		return // Keep snapshot
 	}
@@ -1151,6 +1247,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 			"text": " Failed to create response note.\nClick the snapshot again to retry.",
 		}, config, log)
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		os.Remove(downloadPath)
 		return // Keep snapshot
 	}
@@ -1197,6 +1294,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(start)
 	metricsMutex.Unlock()
+	recordHandlerTaskComplete(taskRecord, "") // Empty string = success
 
 	log.Info("completed snapshot processing",
 		zap.Duration("duration", time.Since(start)))
@@ -1222,9 +1320,13 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 
 	start := time.Now()
 
+	// Record task start for dashboard metrics
+	taskRecord := recordHandlerTaskStart(correlationID, metrics.TaskTypePDF, config.CanvasID)
+
 	parentWidget, err := client.GetWidget(parentID, false)
 	if err != nil {
 		log.Error("failed to get parent PDF widget", zap.Error(err))
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1242,6 +1344,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 		log.Error("invalid widget type for PDF precis",
 			zap.String("expected", "PDF"),
 			zap.String("actual", widgetType))
+		recordHandlerTaskComplete(taskRecord, "invalid widget type: "+widgetType)
 		return
 	}
 
@@ -1271,6 +1374,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	noteResp, err := client.CreateNote(processingNote)
 	if err != nil {
 		log.Error("failed to create processing note", zap.Error(err))
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 	processingNoteID := noteResp["id"].(string)
@@ -1289,6 +1393,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": " Failed to download PDF",
 		}, config, log)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 	defer os.Remove(downloadPath)
@@ -1353,6 +1458,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": fmt.Sprintf(" Failed to analyze PDF: %v", err),
 		}, config, log)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1372,6 +1478,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
 			"text": " Failed to create summary note",
 		}, config, log)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1407,6 +1514,7 @@ func handlePDFPrecis(update Update, client *canvusapi.Client, config *core.Confi
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(start)
 	metricsMutex.Unlock()
+	recordHandlerTaskComplete(taskRecord, "") // Empty string = success
 
 	log.Info("completed PDF precis",
 		zap.Duration("duration", time.Since(start)),
@@ -1479,6 +1587,9 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 
 	start := time.Now()
 
+	// Record task start for dashboard metrics
+	taskRecord := recordHandlerTaskStart(correlationID, metrics.TaskTypeCanvasAnalysis, config.CanvasID)
+
 	// Create a canvas-specific config that uses the canvas model
 	canvasConfig := *config                                       // Create a copy of the config
 	canvasConfig.OpenAINoteModel = canvasConfig.OpenAICanvasModel // Use canvas model for all AI calls
@@ -1487,6 +1598,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	if err := handlers.ValidateUpdate(update); err != nil {
 		log.Error("invalid Canvus precis update", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1502,6 +1614,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	if err != nil {
 		log.Error("failed to update Canvus precis title", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1510,6 +1623,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	if err != nil {
 		log.Error("failed to fetch widgets for Canvus precis", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1520,6 +1634,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	if err := processCanvusPrecis(ctx, client, update, widgets, config, log, repo, correlationID, start); err != nil {
 		log.Error("failed to process Canvus precis", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
 		return
 	}
 
@@ -1527,6 +1642,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 	metricsMutex.Lock()
 	handlerMetrics.processingDuration += time.Since(start)
 	metricsMutex.Unlock()
+	recordHandlerTaskComplete(taskRecord, "") // Empty string = success
 
 	// Cleanup original widget
 	if err := deleteTriggeringWidget(client, update["widget_type"].(string), canvasID, log); err != nil {
