@@ -39,6 +39,12 @@ type Config struct {
 	TextLLMURL  string // Optional override for text generation
 	ImageLLMURL string // Optional override for image generation
 
+	// Local LLM (llama.cpp) Configuration
+	LlamaModelPath    string // Path to GGUF model file for local inference
+	LlamaModelURL     string // Optional URL to download model if not found
+	LlamaModelsDir    string // Directory for storing models (default: ./models)
+	LlamaAutoDownload bool   // Enable auto-download of model if not found
+
 	// Azure OpenAI Configuration
 	AzureOpenAIEndpoint   string // Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
 	AzureOpenAIDeployment string // Azure deployment name for image generation
@@ -149,6 +155,12 @@ func LoadConfig() (*Config, error) {
 	azureOpenAIDeployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
 	azureOpenAIApiVersion := getEnvOrDefault("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
 
+	// Load Local LLM (llama.cpp) configuration
+	llamaModelPath := os.Getenv("LLAMA_MODEL_PATH")
+	llamaModelURL := os.Getenv("LLAMA_MODEL_URL")
+	llamaModelsDir := getEnvOrDefault("LLAMA_MODELS_DIR", "./models")
+	llamaAutoDownload := getEnvOrDefault("LLAMA_AUTO_DOWNLOAD", "false") == "true"
+
 	// Load model names
 	noteModel := getEnvOrDefault("OPENAI_NOTE_MODEL", "gpt-4")
 	canvasModel := getEnvOrDefault("OPENAI_CANVAS_MODEL", "gpt-4")
@@ -245,6 +257,12 @@ func LoadConfig() (*Config, error) {
 		BaseLLMURL:  baseLLMURL,
 		TextLLMURL:  textLLMURL,
 		ImageLLMURL: imageLLMURL,
+
+		// Local LLM (llama.cpp) Configuration
+		LlamaModelPath:    llamaModelPath,
+		LlamaModelURL:     llamaModelURL,
+		LlamaModelsDir:    llamaModelsDir,
+		LlamaAutoDownload: llamaAutoDownload,
 
 		// Azure OpenAI Configuration
 		AzureOpenAIEndpoint:   azureOpenAIEndpoint,
