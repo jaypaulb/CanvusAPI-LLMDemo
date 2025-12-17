@@ -45,6 +45,7 @@ tmp/
 *.exe
 canvusapi-*
 canvuslocallm
+canvuslocallm_*
 !canvusapi/canvusapi.go
 
 # Build output directories
