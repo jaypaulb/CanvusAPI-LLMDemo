@@ -415,7 +415,7 @@ func (m *Monitor) routeUpdate(update Update) error {
 			return nil
 		}
 		// Fall back to existing text/image classification flow
-		go handleNote(update, m.client, m.config, m.logger, m.repository)
+		go handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
 	case "Image":
 		if title, ok := update["title"].(string); ok {
 			if strings.HasPrefix(title, "Snapshot at") {
@@ -489,7 +489,7 @@ func (m *Monitor) handleImagePrompt(update Update, prompt string) {
 	proc := m.getImagegenProcessor()
 	if proc == nil {
 		log.Debug("imagegen processor not available, falling back to handleNote")
-		handleNote(update, m.client, m.config, m.logger, m.repository)
+		handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
 		return
 	}
 
@@ -498,7 +498,7 @@ func (m *Monitor) handleImagePrompt(update Update, prompt string) {
 	if err != nil {
 		log.Error("failed to create parent widget for image generation", zap.Error(err))
 		// Fall back to handleNote which has error handling
-		handleNote(update, m.client, m.config, m.logger, m.repository)
+		handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
 		return
 	}
 
@@ -618,7 +618,7 @@ func (m *Monitor) handleAIIcon(update Update) error {
 	case "PDFPrecis":
 		go handlePDFPrecis(update, m.client, m.config, m.logger, m.repository)
 	case "CanvusPrecis":
-		go handleCanvusPrecis(update, m.client, m.config, m.logger, m.repository)
+		go handleCanvusPrecis(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
 	case "Image_Analysis":
 		llamaClient := m.getLlamaClient()
 		if llamaClient == nil {

@@ -238,8 +238,11 @@ func recordProcessingHistory(
 	}
 }
 
-// handleNote processes Note widget updates
-func handleNote(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
+// handleNote processes Note widget updates.
+// If llamaClient is provided, it uses local inference; otherwise falls back to cloud API.
+//
+// Atomic design: Organism (orchestrates AI inference, Canvus API, and response creation)
+func handleNote(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository, llamaClient *llamaruntime.Client) {
 	noteID, _ := update["id"].(string)
 	log := logger.With(
 		zap.String("correlation_id", generateCorrelationID()),
@@ -292,22 +295,55 @@ func handleNote(update Update, client *canvusapi.Client, config *core.Config, lo
 	npc.ctx = ctx
 	updateNoteWithRetry(client, noteID, map[string]interface{}{"text": npc.baseText + "\n\n Analyzing request..."}, config, log)
 
-	// Generate AI response
+	// Generate AI response - use local llamaruntime if available, otherwise cloud
 	metricsLogger := logging.NewMetricsLogger(log)
-	inferenceTimer := metricsLogger.StartInference(config.OpenAINoteModel)
-	rawResponse, err := generateAIResponse(npc.aiPrompt, config, noteSystemMessage, log)
-	if err != nil {
-		recordNoteError(npc, err)
-		metricsLogger.EndInference(inferenceTimer, 0, 0)
-		if err := handleAIError(ctx, client, update, err, npc.baseText, config, log); err != nil {
+	var rawResponse string
+	var inferenceErr error
+	var modelName string
+
+	if llamaClient != nil {
+		// Use local llamaruntime for inference
+		modelName = "llamaruntime"
+		log.Info("using local llamaruntime for note processing")
+		inferenceTimer := metricsLogger.StartInference(modelName)
+		rawResponse, inferenceErr = generateAIResponseLocal(ctx, llamaClient, npc.aiPrompt, config, noteSystemMessage, log)
+		if inferenceErr != nil {
+			metricsLogger.EndInference(inferenceTimer, 0, 0)
+		} else {
+			promptTokens := len(npc.aiPrompt) / 4
+			completionTokens := len(rawResponse) / 4
+			metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
+		}
+	} else {
+		// Fall back to cloud OpenAI API
+		modelName = config.OpenAINoteModel
+		log.Info("using cloud OpenAI API for note processing (llamaruntime not available)")
+		inferenceTimer := metricsLogger.StartInference(modelName)
+		rawResponse, inferenceErr = generateAIResponse(npc.aiPrompt, config, noteSystemMessage, log)
+		if inferenceErr != nil {
+			metricsLogger.EndInference(inferenceTimer, 0, 0)
+		} else {
+			promptTokens := len(npc.aiPrompt) / 4
+			completionTokens := len(rawResponse) / 4
+			metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
+		}
+	}
+
+	if inferenceErr != nil {
+		recordNoteError(npc, inferenceErr)
+		if err := handleAIError(ctx, client, update, inferenceErr, npc.baseText, config, log); err != nil {
 			log.Error("failed to create error note", zap.Error(err))
 		}
 		return
 	}
 
-	promptTokens, completionTokens := len(npc.aiPrompt)/4, len(rawResponse)/4
-	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
-	log.Debug("received AI response", zap.String("response_preview", truncateText(rawResponse, 50)))
+	// Estimate tokens for logging and metrics
+	promptTokens := len(npc.aiPrompt) / 4
+	completionTokens := len(rawResponse) / 4
+
+	log.Debug("received AI response",
+		zap.String("model", modelName),
+		zap.String("response_preview", truncateText(rawResponse, 50)))
 
 	// Parse and process AI response
 	var aiNoteResponse AINoteResponse
@@ -532,6 +568,93 @@ func generateAIResponse(prompt string, config *core.Config, systemMessage string
 	var testParse map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
 		log.Error("invalid JSON in response", zap.Error(err))
+		return "", fmt.Errorf("invalid JSON in response: %w", err)
+	}
+
+	// Validate it has the required fields
+	if _, ok := testParse["type"].(string); !ok {
+		log.Error("response missing 'type' field")
+		return "", fmt.Errorf("response missing 'type' field")
+	}
+	if _, ok := testParse["content"].(string); !ok {
+		log.Error("response missing 'content' field")
+		return "", fmt.Errorf("response missing 'content' field")
+	}
+
+	return jsonResponse, nil
+}
+
+// generateAIResponseLocal generates an AI response using the local llamaruntime.
+// This replaces generateAIResponse for local LLM inference.
+//
+// The response format matches what generateAIResponse returns:
+// {"type": "text"|"image", "content": "..."}
+//
+// Atomic design: Molecule (composes llamaruntime.Client.Infer with JSON formatting)
+func generateAIResponseLocal(ctx context.Context, llamaClient *llamaruntime.Client, prompt string, config *core.Config, systemMessage string, log *logging.Logger) (string, error) {
+	if llamaClient == nil {
+		return "", fmt.Errorf("llamaruntime client not available")
+	}
+
+	// Construct the full prompt with system message
+	// Local models typically need explicit formatting
+	enhancedSystemMessage := "You are a JSON-only response generator. " +
+		"CRITICAL: Respond with ONLY valid JSON. No other text allowed. " +
+		"No explanations. No XML tags. No thinking out loud. " +
+		systemMessage + "\n" +
+		"RESPONSE FORMAT:\n" +
+		"For text: {\"type\": \"text\", \"content\": \"your response\"}\n" +
+		"For image: {\"type\": \"image\", \"content\": \"your prompt\"}"
+
+	fullPrompt := fmt.Sprintf("### System:\n%s\n\n### User:\n%s\n\n### Assistant:\n", enhancedSystemMessage, prompt)
+
+	// Configure inference parameters
+	params := llamaruntime.DefaultInferenceParams()
+	params.Prompt = fullPrompt
+	params.MaxTokens = int(config.NoteResponseTokens)
+	params.Temperature = 0.3
+	params.Timeout = config.AITimeout
+
+	log.Debug("making local AI inference request",
+		zap.Int("max_tokens", params.MaxTokens),
+		zap.Float32("temperature", params.Temperature))
+
+	// Perform inference
+	result, err := llamaClient.Infer(ctx, params)
+	if err != nil {
+		log.Error("local AI inference failed", zap.Error(err))
+		return "", fmt.Errorf("error generating local AI response: %w", err)
+	}
+
+	if result == nil || result.Text == "" {
+		log.Error("no response from local AI")
+		return "", fmt.Errorf("no response from local AI")
+	}
+
+	rawResponse := result.Text
+
+	log.Debug("received local AI response",
+		zap.Int("tokens_generated", result.TokensGenerated),
+		zap.Duration("duration", result.Duration),
+		zap.String("response_preview", truncateText(rawResponse, 100)))
+
+	// Clean up the response - find the first { and last }
+	startIdx := strings.Index(rawResponse, "{")
+	endIdx := strings.LastIndex(rawResponse, "}")
+
+	if startIdx == -1 || endIdx == -1 || startIdx > endIdx {
+		log.Error("response does not contain valid JSON",
+			zap.String("raw_response", truncateText(rawResponse, 100)))
+		return "", fmt.Errorf("response does not contain valid JSON: %s", rawResponse)
+	}
+
+	// Extract just the JSON part
+	jsonResponse := rawResponse[startIdx : endIdx+1]
+
+	// Validate it's parseable JSON
+	var testParse map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonResponse), &testParse); err != nil {
+		log.Error("invalid JSON in local AI response", zap.Error(err))
 		return "", fmt.Errorf("invalid JSON in response: %w", err)
 	}
 
@@ -1852,8 +1975,11 @@ func estimateTokenCount(text string) int {
 	return handlers.EstimateTokenCount(text)
 }
 
-// handleCanvusPrecis processes Canvus widget summaries
-func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository) {
+// handleCanvusPrecis processes Canvus widget summaries.
+// If llamaClient is provided, it uses local inference; otherwise falls back to cloud API.
+//
+// Atomic design: Organism (orchestrates widget fetching, AI inference, and response creation)
+func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository, llamaClient *llamaruntime.Client) {
 	correlationID := generateCorrelationID()
 	canvasID := update["id"].(string)
 
@@ -1910,7 +2036,7 @@ func handleCanvusPrecis(update Update, client *canvusapi.Client, config *core.Co
 		zap.Int("widget_count", len(widgets)))
 
 	// Generate and process the precis
-	if err := processCanvusPrecis(ctx, client, update, widgets, config, log, repo, correlationID, start); err != nil {
+	if err := processCanvusPrecis(ctx, client, update, widgets, config, log, repo, correlationID, start, llamaClient); err != nil {
 		log.Error("failed to process Canvus precis", zap.Error(err))
 		atomic.AddInt64(&handlerMetrics.errors, 1)
 		recordHandlerTaskComplete(taskRecord, err.Error())
@@ -1962,8 +2088,11 @@ func fetchCanvasWidgets(ctx context.Context, client *canvusapi.Client, config *c
 	return widgets, nil
 }
 
-// processCanvusPrecis generates and creates a summary of the canvas
-func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config, log *logging.Logger, repo *db.Repository, correlationID string, start time.Time) error {
+// processCanvusPrecis generates and creates a summary of the canvas.
+// If llamaClient is provided, it uses local inference; otherwise falls back to cloud API.
+//
+// Atomic design: Molecule (composes AI inference with widget processing)
+func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update Update, widgets []map[string]interface{}, config *core.Config, log *logging.Logger, repo *db.Repository, correlationID string, start time.Time, llamaClient *llamaruntime.Client) error {
 	log.Info("starting Canvus Precis processing")
 
 	// Create a canvas-specific config that uses the canvas model
@@ -2048,14 +2177,41 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 		"text": " Generating canvas analysis...\nThis may take a moment.",
 	}, config, log)
 
-	// Create metrics logger for inference tracking
+	// Generate AI response - use local llamaruntime if available, otherwise cloud
 	metricsLogger := logging.NewMetricsLogger(log)
-	inferenceTimer := metricsLogger.StartInference(canvasConfig.OpenAINoteModel)
+	var rawResponse string
+	var inferenceErr error
+	var modelName string
 
-	// Generate AI response
-	rawResponse, err := generateAIResponse(string(widgetsJSON), &canvasConfig, systemMessage, log)
-	if err != nil {
-		metricsLogger.EndInference(inferenceTimer, 0, 0)
+	if llamaClient != nil {
+		// Use local llamaruntime for inference
+		modelName = "llamaruntime"
+		log.Info("using local llamaruntime for canvas analysis")
+		inferenceTimer := metricsLogger.StartInference(modelName)
+		rawResponse, inferenceErr = generateAIResponseLocal(ctx, llamaClient, string(widgetsJSON), &canvasConfig, systemMessage, log)
+		if inferenceErr != nil {
+			metricsLogger.EndInference(inferenceTimer, 0, 0)
+		} else {
+			promptTokens := len(widgetsJSON) / 4
+			completionTokens := len(rawResponse) / 4
+			metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
+		}
+	} else {
+		// Fall back to cloud OpenAI API
+		modelName = canvasConfig.OpenAINoteModel
+		log.Info("using cloud OpenAI API for canvas analysis (llamaruntime not available)")
+		inferenceTimer := metricsLogger.StartInference(modelName)
+		rawResponse, inferenceErr = generateAIResponse(string(widgetsJSON), &canvasConfig, systemMessage, log)
+		if inferenceErr != nil {
+			metricsLogger.EndInference(inferenceTimer, 0, 0)
+		} else {
+			promptTokens := len(widgetsJSON) / 4
+			completionTokens := len(rawResponse) / 4
+			metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
+		}
+	}
+
+	if inferenceErr != nil {
 		// Record failed canvas analysis to database
 		recordProcessingHistory(
 			ctx,
@@ -2066,22 +2222,21 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 			"canvas_analysis",
 			string(widgetsJSON),
 			"",
-			canvasConfig.OpenAINoteModel,
+			modelName,
 			len(widgetsJSON)/4,
 			0,
 			int(time.Since(start).Milliseconds()),
 			"error",
-			err.Error(),
+			inferenceErr.Error(),
 			log,
 		)
 		deleteTriggeringWidget(client, "note", processingNoteID, log)
-		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", err), update["text"].(string), config, log)
+		return handleAIError(ctx, client, update, fmt.Errorf("AI generation failed: %w", inferenceErr), update["text"].(string), config, log)
 	}
 
-	// Estimate tokens for logging
+	// Estimate tokens for logging and metrics
 	promptTokens := len(widgetsJSON) / 4
 	completionTokens := len(rawResponse) / 4
-	metricsLogger.EndInference(inferenceTimer, promptTokens, completionTokens)
 
 	// Parse the AI response JSON and extract the content field
 	var aiResponse map[string]interface{}
@@ -2117,7 +2272,7 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 		"canvas_analysis",
 		string(widgetsJSON),
 		content,
-		config.OpenAINoteModel,
+		modelName,
 		promptTokens,
 		completionTokens,
 		int(time.Since(start).Milliseconds()),
