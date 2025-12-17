@@ -264,22 +264,40 @@ bv --robot-diff --diff-since v1.0.0
 1. **Atoms** (Pure Functions & Primitives)
    - `logging/logging.go`: Simple log handler function
    - `core/config.go`: Environment variable parsers (`getEnvOrDefault`, `parseIntEnv`, etc.)
-   - Individual HTTP client creation functions
+   - `handlers/text_processing.go`: `GenerateCorrelationID()`, `TruncateText()`, `ExtractAIPrompt()`
+   - `handlers/validation.go`: Input validation functions
+   - `pdfprocessor/atoms.go`: PDF utility functions
+   - `imagegen/atoms.go`: URL validation, format detection
+   - `ocrprocessor/atoms.go`: API key validation
+   - `canvasanalyzer/atoms.go`: Widget filtering/formatting
 
 2. **Molecules** (Simple Compositions)
    - `core/Config`: Configuration struct composing multiple environment variables
    - `core/GetHTTPClient()`: HTTP client factory composing TLS config + timeout
-   - `canvusapi.Client`: API client composing server URL, canvas ID, API key, and HTTP client
+   - `pdfprocessor/extractor.go`: PDF text extraction composing atoms
+   - `pdfprocessor/chunker.go`: Text chunking logic
+   - `pdfprocessor/summarizer.go`: AI summarization with OpenAI
+   - `imagegen/openai_provider.go`: OpenAI DALL-E image generation
+   - `imagegen/azure_provider.go`: Azure OpenAI image generation
+   - `imagegen/downloader.go`: Image download from URLs
+   - `ocrprocessor/client.go`: Google Vision API client
+   - `canvasanalyzer/fetcher.go`: Widget fetching with retry logic
+   - `canvasanalyzer/analyzer.go`: Canvas analysis logic
 
 3. **Organisms** (Complex Feature Units)
    - `Monitor`: Canvas monitoring service managing widget state, updates, and processing
-   - Handler functions in `handlers.go`: Complex AI processing logic for notes, PDFs, images
-   - `canvusapi` package: Full API interaction layer with methods for widgets, notes, images
+   - `pdfprocessor.Processor`: Complete PDF pipeline (extract → chunk → summarize)
+   - `imagegen.Generator`: Cloud image generation pipeline (generate → download → upload)
+   - `ocrprocessor.Processor`: OCR pipeline (validate → process → return text)
+   - `canvasanalyzer.Processor`: Canvas analysis pipeline (fetch → filter → analyze)
+   - `canvusapi.Client`: Full API interaction layer with methods for widgets, notes, images
+   - Handler functions in `handlers.go`: Wire organisms together for canvas events
 
 4. **Templates** (Structural Contracts)
+   - `imagegen.Provider` interface: Abstraction for image generation providers
+   - `canvasanalyzer.WidgetClient` interface: Abstraction for widget fetching
    - `core.Config` interface (implicit)
-   - OpenAI client configuration patterns
-   - Error handling patterns (`APIError` struct)
+   - Error handling patterns (`APIError` struct, sentinel errors)
 
 5. **Pages** (Composition Roots)
    - `main.go`: Application bootstrap, wires together Monitor + Client + Config
@@ -290,7 +308,7 @@ bv --robot-diff --diff-since v1.0.0
 ```
 go_backend/
 ├── main.go                  # Entry point: loads config, creates client & monitor
-├── handlers.go              # AI processing handlers (notes, PDFs, images, canvas analysis)
+├── handlers.go              # AI processing handlers (wires organisms together)
 ├── monitorcanvus.go        # Canvas monitoring service with streaming updates
 ├── core/                    # Core business logic atoms
 │   ├── config.go           # Configuration management (env parsing, HTTP client factory)
@@ -299,7 +317,37 @@ go_backend/
 │   └── canvusapi.go        # Widget CRUD, file uploads, API error handling
 ├── logging/                # Logging utility atom
 │   └── logging.go          # Simple log handler
-└── tests/                  # Test suite
+├── handlers/               # NEW: Handler utility atoms
+│   ├── text_processing.go  # GenerateCorrelationID, TruncateText, ExtractAIPrompt
+│   ├── validation.go       # Input validation atoms
+│   ├── location.go         # Widget location calculation
+│   ├── json_parsing.go     # JSON parsing utilities
+│   ├── note_updater.go     # Note update helpers
+│   ├── progress_reporter.go # Progress reporting utilities
+│   └── ai_client_factory.go # AI client creation factory
+├── pdfprocessor/           # NEW: PDF processing organism
+│   ├── atoms.go            # Pure PDF utility functions
+│   ├── extractor.go        # PDF text extraction molecule
+│   ├── chunker.go          # Text chunking molecule
+│   ├── summarizer.go       # AI summarization molecule
+│   └── processor.go        # Processor organism (orchestrates all)
+├── imagegen/               # NEW: Image generation organism
+│   ├── atoms.go            # URL validation, format detection
+│   ├── placement.go        # Canvas placement calculation
+│   ├── openai_provider.go  # OpenAI DALL-E provider molecule
+│   ├── azure_provider.go   # Azure OpenAI provider molecule
+│   ├── downloader.go       # Image download molecule
+│   └── generator.go        # Generator organism (orchestrates all)
+├── ocrprocessor/           # NEW: OCR processing organism
+│   ├── atoms.go            # API key validation atoms
+│   ├── client.go           # Google Vision API client molecule
+│   └── processor.go        # Processor organism (orchestrates all)
+├── canvasanalyzer/         # NEW: Canvas analysis organism
+│   ├── atoms.go            # Widget filtering/formatting atoms
+│   ├── fetcher.go          # Widget fetching molecule with retry
+│   ├── analyzer.go         # Analysis logic molecule
+│   └── processor.go        # Processor organism (orchestrates all)
+└── tests/                  # Integration test suite
     ├── canvas_check_test.go
     ├── llm_test.go
     ├── testAPI_test.go
@@ -410,18 +458,26 @@ When refactoring existing code:
    - Organisms: Integration tests, may need mocks
    - Pages: End-to-end tests
 
-### Current Violations to Address
+### Refactoring Status (Phase 4 Complete)
 
-**handlers.go** (~2000+ lines)
-- Contains multiple organisms that should be separate packages
-- PDF processing, image generation, canvas analysis should be independent organisms
-- Many functions are large and contain embedded molecules
-- Refactoring target: Extract `pdfprocessor`, `imagegen`, `canvasanalyzer` packages
+**handlers.go Refactoring: COMPLETE**
+- ✅ Extracted `pdfprocessor/` package for PDF text extraction and summarization
+- ✅ Extracted `imagegen/` package for cloud image generation (OpenAI/Azure)
+- ✅ Extracted `ocrprocessor/` package for Google Vision OCR
+- ✅ Extracted `canvasanalyzer/` package for widget fetching and analysis
+- ✅ Extracted `handlers/` package for shared text processing atoms
+- File reduced from ~2100 lines to ~1984 lines with 28 references to new packages
 
-**Shared Global State**
-- `var config *core.Config` in handlers.go is a global
+**Remaining Technical Debt**
+
+*Shared Global State*
+- `var config *core.Config` in handlers.go is still a global
 - Should be passed explicitly or stored in Monitor struct
 - Violates dependency injection principles
+
+*Local Image Generation (SD Runtime)*
+- `imagegen/sd/` subdirectory placeholder for stable-diffusion.cpp integration
+- Currently using cloud providers only; local generation planned for Phase 3
 
 ## Environment Configuration
 
@@ -480,6 +536,63 @@ func TestFeature(t *testing.T) {
 ```
 
 ## Common Development Patterns
+
+### Using the Extracted Packages
+
+**PDF Processing (pdfprocessor)**
+```go
+import "go_backend/pdfprocessor"
+
+// Create processor with default config
+config := pdfprocessor.DefaultProcessorConfig()
+processor := pdfprocessor.NewProcessorWithProgress(config, aiClient, progressCallback)
+
+// Process a PDF file
+result, err := processor.Process(ctx, filePath, "Summarize this document")
+if err != nil {
+    return err
+}
+fmt.Println(result.Summary)
+```
+
+**Image Generation (imagegen)**
+```go
+import "go_backend/imagegen"
+
+// Create generator from config
+generator, err := imagegen.NewGeneratorFromConfig(config, canvusClient, logger)
+if err != nil {
+    return err
+}
+
+// Generate image and upload to canvas
+err = generator.GenerateAndUpload(ctx, prompt, parentWidget)
+```
+
+**OCR Processing (ocrprocessor)**
+```go
+import "go_backend/ocrprocessor"
+
+// Create processor
+processor, err := ocrprocessor.NewProcessor(apiKey, httpClient, logger, ocrprocessor.DefaultProcessorConfig())
+if err != nil {
+    return err
+}
+
+// Process image URL
+text, err := processor.ProcessURL(ctx, imageURL)
+```
+
+**Canvas Analysis (canvasanalyzer)**
+```go
+import "go_backend/canvasanalyzer"
+
+// Create fetcher
+fetcher := canvasanalyzer.NewFetcher(canvusClient, canvasanalyzer.DefaultFetcherConfig(), logger)
+
+// Fetch widgets with retry
+widgets, err := fetcher.FetchWithRetry(ctx)
+```
 
 ### Adding a New AI Feature
 
