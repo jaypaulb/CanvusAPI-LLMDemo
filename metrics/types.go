@@ -147,6 +147,7 @@ const (
 	TaskTypeNote           = "note"
 	TaskTypePDF            = "pdf"
 	TaskTypeImage          = "image"
+	TaskTypeImageAnalysis  = "image_analysis"
 	TaskTypeCanvasAnalysis = "canvas_analysis"
 	TaskTypeHandwriting    = "handwriting"
 )

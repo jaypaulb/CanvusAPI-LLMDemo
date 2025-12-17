@@ -21,6 +21,7 @@ import (
 	"go_backend/db"
 	"go_backend/handlers"
 	"go_backend/imagegen"
+	"go_backend/llamaruntime"
 	"go_backend/logging"
 	"go_backend/metrics"
 	"go_backend/ocrprocessor"
@@ -57,6 +58,7 @@ type AINoteResponse struct {
 	Type    string `json:"type"`
 	Content string `json:"content"`
 }
+
 // Shared resources and synchronization
 var (
 	logMutex       sync.Mutex
@@ -71,9 +73,9 @@ var (
 	}
 
 	// Metrics integration for dashboard
-	dashboardMetricsStore      metrics.MetricsCollector
-	dashboardTaskBroadcaster   metrics.TaskBroadcaster
-	dashboardMetricsMux        sync.RWMutex
+	dashboardMetricsStore    metrics.MetricsCollector
+	dashboardTaskBroadcaster metrics.TaskBroadcaster
+	dashboardMetricsMux      sync.RWMutex
 )
 
 // SetDashboardMetrics sets the metrics store and broadcaster for handler metrics integration.
@@ -1270,7 +1272,6 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 		log.Warn("failed to delete snapshot", zap.Error(err))
 	}
 
-
 	// Record successful OCR processing to database
 	recordProcessingHistory(
 		ctx,
@@ -1282,7 +1283,7 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 		"Snapshot OCR",
 		ocrText,
 		"google_vision",
-		0, // OCR doesn't report input tokens
+		0,              // OCR doesn't report input tokens
 		len(ocrText)/4, // Estimate output tokens
 		int(time.Since(start).Milliseconds()),
 		"success",
@@ -1298,6 +1299,284 @@ func handleSnapshot(update Update, client *canvusapi.Client, config *core.Config
 
 	log.Info("completed snapshot processing",
 		zap.Duration("duration", time.Since(start)))
+}
+
+// handleImageAnalysis analyzes an image widget using llamaruntime.InferVision.
+// This handler is triggered when a user places an AI_Icon_Image_Analysis widget on an image.
+// It downloads the parent image, runs vision inference, and creates a description note.
+//
+// Atomic design: Organism (composes llamaruntime client, Canvus API, and response creation)
+func handleImageAnalysis(update Update, client *canvusapi.Client, config *core.Config, logger *logging.Logger, repo *db.Repository, llamaClient *llamaruntime.Client) {
+	correlationID := generateCorrelationID()
+	triggerID := update["id"].(string)
+	parentID, _ := update["parent_id"].(string)
+
+	// Create a logger with widget context
+	log := logger.With(
+		zap.String("correlation_id", correlationID),
+		zap.String("trigger_widget_id", triggerID),
+		zap.String("parent_id", parentID),
+		zap.String("widget_type", "Image_Analysis"),
+	)
+
+	start := time.Now()
+
+	// Record task start for dashboard metrics
+	taskRecord := recordHandlerTaskStart(correlationID, metrics.TaskTypeImageAnalysis, config.CanvasID)
+
+	downloadsMutex.Lock()
+	defer downloadsMutex.Unlock()
+
+	// Get the parent widget (the image to analyze)
+	if parentID == "" {
+		log.Error("no parent image to analyze")
+		recordHandlerTaskComplete(taskRecord, "no parent image")
+		return
+	}
+
+	parentWidget, err := client.GetWidget(parentID, false)
+	if err != nil {
+		log.Error("failed to get parent image widget", zap.Error(err))
+		recordHandlerTaskComplete(taskRecord, err.Error())
+		return
+	}
+
+	// Verify parent is an image widget
+	widgetType, _ := parentWidget["widget_type"].(string)
+	if strings.ToLower(widgetType) != "image" {
+		log.Error("parent widget is not an image",
+			zap.String("expected", "Image"),
+			zap.String("actual", widgetType))
+		recordHandlerTaskComplete(taskRecord, "parent is not an image: "+widgetType)
+		return
+	}
+
+	// Log parent image details
+	imgLoc := parentWidget["location"].(map[string]interface{})
+	imgSize := parentWidget["size"].(map[string]interface{})
+	log.Info("analyzing image",
+		zap.Float64("x", imgLoc["x"].(float64)),
+		zap.Float64("y", imgLoc["y"].(float64)),
+		zap.Float64("width", imgSize["width"].(float64)),
+		zap.Float64("height", imgSize["height"].(float64)))
+
+	// Create processing note
+	processingNoteID, err := createProcessingNote(client, update, config, log)
+	if err != nil {
+		log.Error("failed to create processing note", zap.Error(err))
+		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
+		return
+	}
+
+	// Create context for the operation
+	ctx, cancel := context.WithTimeout(context.Background(), config.ProcessingTimeout)
+	defer cancel()
+
+	// Download the image with retries
+	downloadPath := filepath.Join(
+		config.DownloadsDir,
+		fmt.Sprintf("temp_analysis_%s.jpg", parentID),
+	)
+
+	const maxRetries = 3
+	var downloadErr error
+	var fileInfo os.FileInfo
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.Debug("download attempt",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries))
+
+		if attempt > 1 {
+			// Update note with countdown
+			for countdown := 3; countdown > 0; countdown-- {
+				updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+					"text": fmt.Sprintf("Download failed. Retrying in %d...", countdown),
+				}, config, log)
+				time.Sleep(time.Second)
+			}
+		}
+
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": fmt.Sprintf("Downloading image... (Attempt %d/%d)", attempt, maxRetries),
+		}, config, log)
+
+		// Try to download
+		downloadErr = client.DownloadImage(parentID, downloadPath)
+		if downloadErr != nil {
+			log.Warn("download attempt failed",
+				zap.Int("attempt", attempt),
+				zap.Error(downloadErr))
+			continue
+		}
+
+		// Verify the downloaded file
+		fileInfo, err = os.Stat(downloadPath)
+		if err != nil {
+			log.Warn("file verification failed after download",
+				zap.Int("attempt", attempt),
+				zap.Error(err))
+			downloadErr = fmt.Errorf("file verification failed: %w", err)
+			continue
+		}
+
+		if fileInfo.Size() == 0 {
+			log.Warn("downloaded file is empty", zap.Int("attempt", attempt))
+			downloadErr = fmt.Errorf("downloaded file is empty")
+			continue
+		}
+
+		log.Debug("download successful",
+			zap.Int("attempt", attempt),
+			zap.Int64("file_size", fileInfo.Size()))
+		downloadErr = nil
+		break
+	}
+
+	// If all download attempts failed
+	if downloadErr != nil {
+		log.Error("all download attempts failed", zap.Error(downloadErr))
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": " Failed to download image after multiple attempts.\nPlease try again.",
+		}, config, log)
+		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, downloadErr.Error())
+		return
+	}
+
+	// Read image data
+	imageData, err := os.ReadFile(downloadPath)
+	if err != nil {
+		log.Error("failed to read image data", zap.Error(err))
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": " Failed to read image data.\nPlease try again.",
+		}, config, log)
+		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
+		os.Remove(downloadPath)
+		return
+	}
+
+	log.Debug("successfully read image data",
+		zap.Int("size_bytes", len(imageData)))
+
+	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+		"text": "Analyzing image with AI vision... Please wait.",
+	}, config, log)
+
+	// Perform vision inference using llamaruntime
+	visionParams := llamaruntime.VisionParams{
+		ImageData:   imageData,
+		Prompt:      "Describe this image in detail. Include information about what you see, the composition, colors, and any notable elements.",
+		MaxTokens:   int(config.ImageAnalysisTokens),
+		Temperature: 0.7,
+		Timeout:     config.AITimeout,
+	}
+
+	result, err := llamaClient.InferVision(ctx, visionParams)
+	if err != nil {
+		// Record failed image analysis to database
+		recordProcessingHistory(
+			ctx,
+			repo,
+			correlationID,
+			config.CanvasID,
+			parentID,
+			"image_analysis",
+			"Image Analysis",
+			"",
+			"llamaruntime",
+			0,
+			0,
+			int(time.Since(start).Milliseconds()),
+			"error",
+			err.Error(),
+			log,
+		)
+		log.Error("failed to analyze image", zap.Error(err))
+		errorMessage := " Failed to analyze image.\n\n"
+		errorMessage += fmt.Sprintf("Error: %v", err)
+		errorMessage += "\n\nPlease try again."
+
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": errorMessage,
+		}, config, log)
+		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
+		os.Remove(downloadPath)
+		return
+	}
+
+	description := result.Text
+	log.Info("image analysis complete",
+		zap.Int("description_length", len(description)),
+		zap.Int("tokens_generated", result.TokensGenerated),
+		zap.Duration("inference_time", result.Duration))
+
+	updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+		"text": "Creating response note...",
+	}, config, log)
+
+	// Create response note with description
+	if err := createNoteFromResponse(description, triggerID, update, false, client, config, log); err != nil {
+		log.Error("failed to create response note", zap.Error(err))
+		updateNoteWithRetry(client, processingNoteID, map[string]interface{}{
+			"text": " Failed to create response note.\nPlease try again.",
+		}, config, log)
+		atomic.AddInt64(&handlerMetrics.errors, 1)
+		recordHandlerTaskComplete(taskRecord, err.Error())
+		os.Remove(downloadPath)
+		return
+	}
+
+	// Only cleanup if everything succeeded
+	log.Debug("image analysis process completed successfully, cleaning up resources")
+
+	// Clean up the downloaded file
+	if err := os.Remove(downloadPath); err != nil {
+		log.Warn("failed to remove downloaded file", zap.Error(err))
+	}
+
+	// Delete the processing note
+	if err := deleteTriggeringWidget(client, "note", processingNoteID, log); err != nil {
+		log.Warn("failed to delete processing note", zap.Error(err))
+	}
+
+	// Delete the trigger icon
+	if err := deleteTriggeringWidget(client, "image", triggerID, log); err != nil {
+		log.Warn("failed to delete trigger icon", zap.Error(err))
+	}
+
+	// Record successful image analysis to database
+	recordProcessingHistory(
+		ctx,
+		repo,
+		correlationID,
+		config.CanvasID,
+		parentID,
+		"image_analysis",
+		"Image Analysis",
+		description,
+		"llamaruntime",
+		0, // llamaruntime doesn't report input tokens
+		result.TokensGenerated,
+		int(time.Since(start).Milliseconds()),
+		"success",
+		"",
+		log,
+	)
+
+	// Update metrics
+	atomic.AddInt64(&handlerMetrics.processedImages, 1)
+	metricsMutex.Lock()
+	handlerMetrics.processingDuration += time.Since(start)
+	metricsMutex.Unlock()
+	recordHandlerTaskComplete(taskRecord, "") // Empty string = success
+
+	log.Info("completed image analysis",
+		zap.Duration("duration", time.Since(start)),
+		zap.Int("description_length", len(description)))
 }
 
 // getPDFChunkPrompt returns the system message for PDF chunk analysis (delegated to handlers package)
@@ -1827,7 +2106,6 @@ func processCanvusPrecis(ctx context.Context, client *canvusapi.Client, update U
 
 	// Clean up processing note
 	deleteTriggeringWidget(client, "note", processingNoteID, log)
-
 
 	// Record successful canvas analysis to database
 	recordProcessingHistory(

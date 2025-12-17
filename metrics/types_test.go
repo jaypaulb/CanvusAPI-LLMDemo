@@ -78,9 +78,9 @@ func TestGPUMetricsJSONMarshal(t *testing.T) {
 	metrics := GPUMetrics{
 		Utilization: 75.5,
 		Temperature: 68.0,
-		MemoryTotal: 8589934592,  // 8GB
-		MemoryUsed:  4294967296,  // 4GB
-		MemoryFree:  4294967296,  // 4GB
+		MemoryTotal: 8589934592, // 8GB
+		MemoryUsed:  4294967296, // 4GB
+		MemoryFree:  4294967296, // 4GB
 	}
 
 	data, err := json.Marshal(metrics)
@@ -265,6 +265,9 @@ func TestTaskTypeConstants(t *testing.T) {
 	}
 	if TaskTypeImage != "image" {
 		t.Errorf("Expected TaskTypeImage to be 'image', got '%s'", TaskTypeImage)
+	}
+	if TaskTypeImageAnalysis != "image_analysis" {
+		t.Errorf("Expected TaskTypeImageAnalysis to be 'image_analysis', got '%s'", TaskTypeImageAnalysis)
 	}
 	if TaskTypeCanvasAnalysis != "canvas_analysis" {
 		t.Errorf("Expected TaskTypeCanvasAnalysis to be 'canvas_analysis', got '%s'", TaskTypeCanvasAnalysis)

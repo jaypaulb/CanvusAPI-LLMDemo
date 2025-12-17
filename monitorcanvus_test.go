@@ -427,3 +427,27 @@ func TestRouteUpdateImagePrompt(t *testing.T) {
 		})
 	}
 }
+
+// TestSetLlamaClient tests the SetLlamaClient method.
+func TestSetLlamaClient(t *testing.T) {
+	logger := createTestLogger(t)
+
+	// Create a minimal config for the client
+	cfg := &core.Config{}
+
+	// Create a minimal client (won't actually connect)
+	client := &canvusapi.Client{}
+
+	m := NewMonitor(client, cfg, logger, (*db.Repository)(nil))
+
+	t.Run("llamaClient initially nil", func(t *testing.T) {
+		llamaClient := m.getLlamaClient()
+		if llamaClient != nil {
+			t.Error("llamaClient should be nil initially")
+		}
+	})
+
+	// Note: We can't easily create a real llamaruntime.Client without the llama.cpp library,
+	// so we just test the getter returns nil when not set.
+	// Full integration testing would require the llama.cpp library to be available.
+}

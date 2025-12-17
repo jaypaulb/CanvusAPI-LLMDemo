@@ -14,6 +14,7 @@ import (
 	"go_backend/core"
 	"go_backend/db"
 	"go_backend/imagegen"
+	"go_backend/llamaruntime"
 	"go_backend/logging"
 	"go_backend/metrics"
 
@@ -22,19 +23,21 @@ import (
 
 // Monitor represents the canvas monitoring service
 type Monitor struct {
-	client           *canvusapi.Client
-	config           *core.Config
-	logger           *logging.Logger
-	repository       *db.Repository
-	done             chan struct{}
-	widgets          map[string]map[string]interface{}
-	widgetsMux       sync.RWMutex
-	imagegenProc     *imagegen.Processor
-	imagegenProcMux  sync.RWMutex
-	metricsStore     metrics.MetricsCollector
-	metricsStoreMux  sync.RWMutex
-	taskBroadcaster  metrics.TaskBroadcaster
-	broadcasterMux   sync.RWMutex
+	client          *canvusapi.Client
+	config          *core.Config
+	logger          *logging.Logger
+	repository      *db.Repository
+	done            chan struct{}
+	widgets         map[string]map[string]interface{}
+	widgetsMux      sync.RWMutex
+	imagegenProc    *imagegen.Processor
+	imagegenProcMux sync.RWMutex
+	llamaClient     *llamaruntime.Client
+	llamaClientMux  sync.RWMutex
+	metricsStore    metrics.MetricsCollector
+	metricsStoreMux sync.RWMutex
+	taskBroadcaster metrics.TaskBroadcaster
+	broadcasterMux  sync.RWMutex
 }
 
 // WidgetState tracks widget information
@@ -117,6 +120,23 @@ func (m *Monitor) getImagegenProcessor() *imagegen.Processor {
 	m.imagegenProcMux.RLock()
 	defer m.imagegenProcMux.RUnlock()
 	return m.imagegenProc
+}
+
+// SetLlamaClient sets the llamaruntime client for image analysis.
+// This should be called after the llama runtime is initialized.
+// If not set, image analysis via AI_Icon_Image_Analysis will not be available.
+func (m *Monitor) SetLlamaClient(client *llamaruntime.Client) {
+	m.llamaClientMux.Lock()
+	defer m.llamaClientMux.Unlock()
+	m.llamaClient = client
+	m.logger.Info("llamaruntime client set for image analysis")
+}
+
+// getLlamaClient returns the llamaruntime client if available.
+func (m *Monitor) getLlamaClient() *llamaruntime.Client {
+	m.llamaClientMux.RLock()
+	defer m.llamaClientMux.RUnlock()
+	return m.llamaClient
 }
 
 // RecordTaskStart records that a task has started processing and broadcasts the update.
@@ -599,6 +619,14 @@ func (m *Monitor) handleAIIcon(update Update) error {
 		go handlePDFPrecis(update, m.client, m.config, m.logger, m.repository)
 	case "CanvusPrecis":
 		go handleCanvusPrecis(update, m.client, m.config, m.logger, m.repository)
+	case "Image_Analysis":
+		llamaClient := m.getLlamaClient()
+		if llamaClient == nil {
+			m.logger.Warn("llamaruntime client not available for image analysis",
+				zap.String("action", action))
+			return nil
+		}
+		go handleImageAnalysis(update, m.client, m.config, m.logger, m.repository, llamaClient)
 	default:
 		m.logger.Debug("unknown AI_Icon action", zap.String("action", action))
 	}
