@@ -25,32 +25,9 @@ package sdruntime
 #cgo windows LDFLAGS: -L${SRCDIR}/../lib -lstable-diffusion
 #cgo darwin LDFLAGS: -L${SRCDIR}/../lib -lstable-diffusion -Wl,-rpath,${SRCDIR}/../lib
 
-// NOTE: The actual header include is commented out until the library is available.
-// When stable-diffusion.cpp is integrated, uncomment these lines:
-//
-// #include <stable-diffusion.h>
-// #include <stdlib.h>
-//
-// For now, we define placeholder types to allow the file to be parsed.
-// These will be replaced with actual C types when the library is available.
-
+#include <stable-diffusion.h>
 #include <stdlib.h>
-#include <stdint.h>
-
-// Placeholder type definitions - replace with actual stable-diffusion.h types
-typedef void* sd_ctx_t;
-
-// Placeholder function declarations - replace with actual library functions
-// These are commented to prevent linker errors until the library is available:
-//
-// extern sd_ctx_t* sd_ctx_create(const char* model_path, int n_threads);
-// extern void sd_ctx_free(sd_ctx_t* ctx);
-// extern uint8_t* txt2img(sd_ctx_t* ctx, const char* prompt, const char* negative_prompt,
-//                         int width, int height, int steps, float cfg_scale, int64_t seed,
-//                         int* out_width, int* out_height);
-// extern void sd_free_image(uint8_t* img);
-// extern const char* sd_get_backend_info();
-// extern int sd_cuda_available();
+#include <stdbool.h>
 */
 import "C"
 
@@ -91,26 +68,40 @@ func loadModelImpl(modelPath string) (*SDContext, error) {
 	// Determine optimal thread count
 	numThreads := runtime.NumCPU()
 
-	// TODO: Uncomment when library is available:
-	// cCtx := C.sd_ctx_create(cModelPath, C.int(numThreads))
-	// if cCtx == nil {
-	//     return nil, fmt.Errorf("%w: C library returned null context", ErrModelLoadFailed)
-	// }
+	// Call C library to create context
+	// sd_ctx_create parameters:
+	//   - model_path: path to model file
+	//   - vae_path: NULL (use built-in VAE)
+	//   - taesd_path: NULL (no TAESD for fast preview)
+	//   - lora_model_dir: NULL (no LoRA models)
+	//   - vae_decode_only: true (txt2img only, no img2img)
+	//   - n_threads: CPU threads for non-CUDA ops
+	//   - vae_tiling: false (disable for performance)
+	//   - free_params_immediately: false (keep params loaded)
+	cCtx := C.sd_ctx_create(
+		cModelPath,
+		nil,                // vae_path (NULL = use built-in)
+		nil,                // taesd_path (NULL = no fast preview)
+		nil,                // lora_model_dir (NULL = no LoRA)
+		C.bool(true),       // vae_decode_only (txt2img only)
+		C.int(numThreads),  // n_threads
+		C.bool(false),      // vae_tiling (disable for performance)
+		C.bool(false),      // free_params_immediately (keep loaded)
+	)
 
-	// For now, return error indicating library not fully integrated
-	_ = numThreads // Use variable to avoid unused error
-	return nil, fmt.Errorf("%w: stable-diffusion.cpp CGo bindings not yet implemented. "+
-		"Library header integration pending", ErrModelLoadFailed)
+	if cCtx == nil {
+		return nil, fmt.Errorf("%w: C library returned null context", ErrModelLoadFailed)
+	}
 
-	// When implemented, the code would continue:
-	// id := atomic.AddUint64(&sdContextCounter, 1)
-	// contextMap.Store(id, &cgoContext{cCtx: cCtx})
-	//
-	// return &SDContext{
-	//     id:        id,
-	//     modelPath: modelPath,
-	//     valid:     true,
-	// }, nil
+	// Generate unique ID and store in thread-safe map
+	id := atomic.AddUint64(&sdContextCounter, 1)
+	contextMap.Store(id, &cgoContext{cCtx: cCtx})
+
+	return &SDContext{
+		id:        id,
+		modelPath: modelPath,
+		valid:     true,
+	}, nil
 }
 
 // generateImageImpl is the real CGo implementation of GenerateImage.
@@ -137,53 +128,68 @@ func generateImageImpl(ctx *SDContext, params GenerateParams) (*GenerateResult, 
 	cNegPrompt := C.CString(params.NegativePrompt)
 	defer C.free(unsafe.Pointer(cNegPrompt))
 
-	// Resolve seed if random requested (use correct function name)
+	// Resolve seed if random requested
 	seed := params.Seed
 	if seed < 0 {
 		seed = RandomSeed()
 	}
 
-	// TODO: Uncomment when library is available:
-	// var outWidth, outHeight C.int
-	// imgPtr := C.txt2img(
-	//     cgoCtx.cCtx,
-	//     cPrompt,
-	//     cNegPrompt,
-	//     C.int(params.Width),
-	//     C.int(params.Height),
-	//     C.int(params.Steps),
-	//     C.float(params.CFGScale),
-	//     C.int64_t(seed),
-	//     &outWidth,
-	//     &outHeight,
-	// )
-	//
-	// if imgPtr == nil {
-	//     return nil, fmt.Errorf("%w: txt2img returned null", ErrGenerationFailed)
-	// }
-	// defer C.sd_free_image(imgPtr)
-	//
-	// // Calculate image size (assuming RGBA format: 4 bytes per pixel)
-	// imgSize := int(outWidth) * int(outHeight) * 4
-	// // Copy C memory to Go slice before freeing
-	// imgData := C.GoBytes(unsafe.Pointer(imgPtr), C.int(imgSize))
-	//
-	// // Convert RGBA bytes to PNG format using atom function
-	// pngData, err := EncodeToPNG(imgData, int(outWidth), int(outHeight))
-	// if err != nil {
-	//     return nil, fmt.Errorf("%w: failed to encode PNG: %v", ErrGenerationFailed, err)
-	// }
-	//
-	// return &GenerateResult{
-	//     ImageData: pngData,
-	//     Width:     int(outWidth),
-	//     Height:    int(outHeight),
-	//     Seed:      seed,
-	// }, nil
+	// Call txt2img with full parameter set
+	// txt2img parameters:
+	//   - ctx: SD context
+	//   - prompt: text description
+	//   - negative_prompt: what to avoid
+	//   - clip_skip: -1 (use default)
+	//   - cfg_scale: guidance scale
+	//   - width: image width (must be multiple of 8)
+	//   - height: image height (must be multiple of 8)
+	//   - sample_method: SD_SAMPLE_DPMPP_2M (recommended)
+	//   - sample_steps: inference steps
+	//   - seed: random seed
+	//   - batch_count: 1 (single image)
+	imgPtr := C.txt2img(
+		cgoCtx.cCtx,
+		cPrompt,
+		cNegPrompt,
+		C.int(-1),                       // clip_skip (-1 = default)
+		C.float(params.CFGScale),
+		C.int(params.Width),
+		C.int(params.Height),
+		C.SD_SAMPLE_DPMPP_2M,            // sample_method (recommended)
+		C.int(params.Steps),
+		C.int64_t(seed),
+		C.int(1),                        // batch_count (single image)
+	)
 
-	// For now, return error indicating library not fully integrated
-	_ = seed // Use variable to avoid unused error
-	return nil, fmt.Errorf("%w: stable-diffusion.cpp CGo bindings not yet implemented", ErrGenerationFailed)
+	if imgPtr == nil {
+		return nil, fmt.Errorf("%w: txt2img returned null", ErrGenerationFailed)
+	}
+	defer C.sd_free_image(imgPtr)
+
+	// Extract image data from C struct
+	// The C API returns sd_image_t with RGBA data
+	width := int(imgPtr.width)
+	height := int(imgPtr.height)
+	channels := int(imgPtr.channels)
+
+	// Calculate image size (RGBA: 4 bytes per pixel)
+	imgSize := width * height * channels
+
+	// Copy C memory to Go slice before freeing
+	imgData := C.GoBytes(unsafe.Pointer(imgPtr.data), C.int(imgSize))
+
+	// Convert RGBA bytes to PNG format using atom function
+	pngData, err := EncodeToPNG(imgData, width, height)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to encode PNG: %v", ErrGenerationFailed, err)
+	}
+
+	return &GenerateResult{
+		ImageData: pngData,
+		Width:     width,
+		Height:    height,
+		Seed:      seed,
+	}, nil
 }
 
 // freeContextImpl is the real CGo implementation of FreeContext.
@@ -196,8 +202,7 @@ func freeContextImpl(ctx *SDContext) {
 	val, ok := contextMap.LoadAndDelete(ctx.id)
 	if ok {
 		if cgoCtx, ok := val.(*cgoContext); ok && cgoCtx != nil && cgoCtx.cCtx != nil {
-			// TODO: Uncomment when library is available:
-			// C.sd_ctx_free(cgoCtx.cCtx)
+			C.sd_ctx_free(cgoCtx.cCtx)
 		}
 	}
 
@@ -206,19 +211,16 @@ func freeContextImpl(ctx *SDContext) {
 
 // getBackendInfoImpl returns backend info from the C library.
 func getBackendInfoImpl() string {
-	// TODO: Uncomment when library is available:
-	// cInfo := C.sd_get_backend_info()
-	// if cInfo != nil {
-	//     return C.GoString(cInfo)
-	// }
-	return "sd (CGo bindings - library integration pending)"
+	cInfo := C.sd_get_backend_info()
+	if cInfo != nil {
+		return C.GoString(cInfo)
+	}
+	return "sd (CGo bindings - unknown backend)"
 }
 
 // IsCUDAAvailable checks if CUDA is available via the C library.
 func IsCUDAAvailable() bool {
-	// TODO: Uncomment when library is available:
-	// return C.sd_cuda_available() != 0
-	return false
+	return bool(C.sd_cuda_available())
 }
 
 // Ensure atomic is used to avoid unused import error

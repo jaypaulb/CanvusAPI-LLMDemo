@@ -1,4 +1,4 @@
-package core
+package modelmanager
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"go_backend/core"
 )
 
 func TestNewModelManager(t *testing.T) {
@@ -539,7 +540,7 @@ func TestModelManager_isRetryableError(t *testing.T) {
 		{"context canceled", context.Canceled, false},
 		{"context deadline", context.DeadlineExceeded, false},
 		{"checksum mismatch", fmt.Errorf("checksum mismatch: file may be corrupted"), false},
-		{"disk space error", &DiskSpaceError{Message: "insufficient space"}, false},
+		{"disk space error", &core.DiskSpaceError{Message: "insufficient space"}, false},
 		{"network error", fmt.Errorf("connection refused"), true},
 		{"http error", fmt.Errorf("HTTP 500"), true},
 		{"generic error", fmt.Errorf("something went wrong"), true},

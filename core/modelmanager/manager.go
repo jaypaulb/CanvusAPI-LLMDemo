@@ -1,4 +1,4 @@
-package core
+package modelmanager
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go_backend/core"
 )
 
 // ModelConfig holds configuration for a specific AI model.
@@ -31,8 +33,8 @@ var DefaultTextModel = ModelConfig{
 	Name:           "bunny-v1.1-llama-3.2-4b",
 	URL:            "https://huggingface.co/BAAI/Bunny-v1_1-4B/resolve/main/ggml-model-Q4_K_M.gguf",
 	Filename:       "bunny-v1.1-llama-3.2-4b-Q4_K_M.gguf",
-	ExpectedSHA256: "",             // To be filled with actual checksum when known
-	SizeBytes:      3 * BytesPerGB, // ~3GB for 4B Q4_K_M model
+	ExpectedSHA256: "",                      // To be filled with actual checksum when known
+	SizeBytes:      3 * core.BytesPerGB, // ~3GB for 4B Q4_K_M model
 }
 
 // DefaultVisionModel is the vision encoder model configuration.
@@ -40,8 +42,8 @@ var DefaultVisionModel = ModelConfig{
 	Name:           "bunny-mmproj",
 	URL:            "https://huggingface.co/BAAI/Bunny-v1_1-4B/resolve/main/mmproj-model-f16.gguf",
 	Filename:       "bunny-mmproj-f16.gguf",
-	ExpectedSHA256: "",               // To be filled with actual checksum when known
-	SizeBytes:      600 * BytesPerMB, // ~600MB for vision projector
+	ExpectedSHA256: "",                        // To be filled with actual checksum when known
+	SizeBytes:      600 * core.BytesPerMB, // ~600MB for vision projector
 }
 
 // DefaultSDModel is the Stable Diffusion model configuration for image generation.
@@ -49,8 +51,8 @@ var DefaultSDModel = ModelConfig{
 	Name:           "sd-turbo",
 	URL:            "https://huggingface.co/stabilityai/sd-turbo/resolve/main/sd_turbo.safetensors",
 	Filename:       "sd-turbo.safetensors",
-	ExpectedSHA256: "",             // To be filled with actual checksum when known
-	SizeBytes:      2 * BytesPerGB, // ~2GB for SD Turbo
+	ExpectedSHA256: "",                      // To be filled with actual checksum when known
+	SizeBytes:      2 * core.BytesPerGB, // ~2GB for SD Turbo
 }
 
 // ModelManager manages AI model availability and downloading.
@@ -129,7 +131,7 @@ func NewModelManager(modelDir string, httpClient *http.Client, opts ...ModelMana
 		models:          make(map[string]ModelConfig),
 		maxRetries:      3,
 		baseRetryDelay:  2 * time.Second,
-		diskSpaceBuffer: DefaultBufferPercent,
+		diskSpaceBuffer: core.DefaultBufferPercent,
 	}
 
 	// Register default models
@@ -216,7 +218,7 @@ func (mm *ModelManager) checkModelExists(modelPath string, expectedChecksum stri
 	}
 
 	// Verify checksum
-	valid, err := VerifyChecksum(modelPath, expectedChecksum)
+	valid, err := core.VerifyChecksum(modelPath, expectedChecksum)
 	if err != nil {
 		return false, fmt.Errorf("verify checksum: %w", err)
 	}
@@ -240,11 +242,11 @@ func (mm *ModelManager) checkModelExists(modelPath string, expectedChecksum stri
 func (mm *ModelManager) downloadModel(ctx context.Context, modelCfg ModelConfig, destPath string) error {
 	// Check disk space before download
 	if modelCfg.SizeBytes > 0 {
-		if err := CheckDiskSpaceForModel(mm.modelDir, modelCfg.SizeBytes, mm.diskSpaceBuffer); err != nil {
+		if err := core.CheckDiskSpaceForModel(mm.modelDir, modelCfg.SizeBytes, mm.diskSpaceBuffer); err != nil {
 			return &ModelDownloadError{
 				ModelName: modelCfg.Name,
 				Cause:     err,
-				Message:   fmt.Sprintf("insufficient disk space: need %s with %d%% buffer", FormatBytes(modelCfg.SizeBytes), mm.diskSpaceBuffer),
+				Message:   fmt.Sprintf("insufficient disk space: need %s with %d%% buffer", core.FormatBytes(modelCfg.SizeBytes), mm.diskSpaceBuffer),
 			}
 		}
 	}
@@ -301,7 +303,7 @@ func (mm *ModelManager) downloadModel(ctx context.Context, modelCfg ModelConfig,
 
 // attemptDownload performs a single download attempt.
 func (mm *ModelManager) attemptDownload(ctx context.Context, modelCfg ModelConfig, destPath string, attempt int) error {
-	opts := DownloadOptions{
+	opts := core.DownloadOptions{
 		URL:            modelCfg.URL,
 		DestPath:       destPath,
 		ExpectedSHA256: modelCfg.ExpectedSHA256,
@@ -309,7 +311,7 @@ func (mm *ModelManager) attemptDownload(ctx context.Context, modelCfg ModelConfi
 		Resume:         true, // Enable resume for large model files
 	}
 
-	_, err := DownloadWithProgress(ctx, opts)
+	_, err := core.DownloadWithProgress(ctx, opts)
 	return err
 }
 
@@ -332,7 +334,7 @@ func (mm *ModelManager) isRetryableError(err error) bool {
 	}
 
 	// Disk space error is not retryable
-	if _, ok := err.(*DiskSpaceError); ok {
+	if _, ok := err.(*core.DiskSpaceError); ok {
 		return false
 	}
 
