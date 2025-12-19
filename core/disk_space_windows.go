@@ -1,6 +1,6 @@
 //go:build windows
 
-package validation
+package core
 
 import (
 	"syscall"

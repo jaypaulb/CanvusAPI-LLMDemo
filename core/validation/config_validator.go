@@ -35,7 +35,7 @@ func (v *ConfigValidator) WithEnvPath(path string) *ConfigValidator {
 // CheckEnvFile validates that the .env file exists.
 // Returns a ValidationResult with error details if the file is missing.
 func (v *ConfigValidator) CheckEnvFile() ValidationResult {
-	if err := core.CheckFileExists(v.envPath); err != nil {
+	if err := CheckFileExists(v.envPath); err != nil {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Configuration file not found. Copy .env.example to .env and configure your Canvus credentials.",
@@ -61,7 +61,7 @@ func (v *ConfigValidator) CheckServerURL() ValidationResult {
 		}
 	}
 
-	if err := core.ValidateServerURL(serverURL); err != nil {
+	if err := ValidateServerURL(serverURL); err != nil {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Invalid Canvus server URL: " + serverURL + ". Example: https://canvus.example.com",

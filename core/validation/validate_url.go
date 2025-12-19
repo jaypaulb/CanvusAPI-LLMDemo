@@ -10,7 +10,7 @@ import (
 // This is a pure function with no side effects.
 //
 // Returns nil if the URL is valid, or an error describing the validation failure.
-func core.ValidateServerURL(serverURL string) error {
+func ValidateServerURL(serverURL string) error {
 	// Trim whitespace first
 	serverURL = strings.TrimSpace(serverURL)
 

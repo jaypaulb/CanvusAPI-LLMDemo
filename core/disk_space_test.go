@@ -1,4 +1,4 @@
-package validation
+package core
 
 import (
 	"errors"
@@ -163,7 +163,7 @@ func TestCheckDiskSpace_InsufficientSpace(t *testing.T) {
 	// Verify it's a core.DiskSpaceError
 	var diskErr *core.DiskSpaceError
 	if !errors.As(err, &diskErr) {
-		t.Errorf("Error type = %T, want *core.DiskSpaceError", err)
+		t.Errorf("Error type = %T, want *DiskSpaceError", err)
 	} else {
 		if diskErr.Required != doubleFree {
 			t.Errorf("Required = %d, want %d", diskErr.Required, doubleFree)
@@ -183,14 +183,14 @@ func TestCheckDiskSpaceForModel(t *testing.T) {
 
 	// Test with small model size that should fit
 	smallSize := info.Free / 4
-	err = core.CheckDiskSpaceForModel(".", smallSize, 10)
+	err = CheckDiskSpaceForModel(".", smallSize, 10)
 	if err != nil {
 		t.Errorf("CheckDiskSpaceForModel with small size error: %v", err)
 	}
 
 	// Test with oversized model
 	hugeSize := info.Total * 2
-	err = core.CheckDiskSpaceForModel(".", hugeSize, 10)
+	err = CheckDiskSpaceForModel(".", hugeSize, 10)
 	if err == nil {
 		t.Error("CheckDiskSpaceForModel with huge size should error")
 	}

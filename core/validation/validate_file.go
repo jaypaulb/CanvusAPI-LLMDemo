@@ -19,7 +19,7 @@ func (e *FileExistsError) Error() string {
 // This is a pure function that only checks existence, no side effects.
 //
 // Returns nil if the file exists, or a *FileExistsError describing the failure.
-func core.CheckFileExists(path string) error {
+func CheckFileExists(path string) error {
 	if path == "" {
 		return &FileExistsError{
 			Path:    path,
@@ -54,5 +54,5 @@ func core.CheckFileExists(path string) error {
 // CheckEnvFileExists checks if the .env file exists in the current directory.
 // This is a convenience wrapper around CheckFileExists for the common .env case.
 func CheckEnvFileExists() error {
-	return core.CheckFileExists(".env")
+	return CheckFileExists(".env")
 }

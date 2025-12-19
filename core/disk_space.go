@@ -1,4 +1,4 @@
-package validation
+package core
 
 import (
 	"go_backend/core"
@@ -27,7 +27,7 @@ type DiskSpaceInfo struct {
 	UsedPercent float64
 }
 
-// core.DiskSpaceError indicates a disk space problem.
+// DiskSpaceError indicates a disk space problem.
 type DiskSpaceError struct {
 	// Path that was checked
 	Path string
@@ -94,7 +94,7 @@ func GetDiskSpace(path string) (*DiskSpaceInfo, error) {
 }
 
 // CheckDiskSpace verifies there is sufficient disk space at the given path.
-// Returns nil if there is enough space, or a core.DiskSpaceError if not.
+// Returns nil if there is enough space, or a DiskSpaceError if not.
 // requiredBytes is the minimum required free space in bytes.
 func CheckDiskSpace(path string, requiredBytes int64) error {
 	info, err := GetDiskSpace(path)
@@ -118,7 +118,7 @@ func CheckDiskSpace(path string, requiredBytes int64) error {
 // CheckDiskSpaceForModel checks if there's enough space to download a model.
 // Uses default model size requirements (~8GB for typical LLM model).
 // bufferPercent is additional buffer space as a percentage (e.g., 10 for 10% extra).
-func core.CheckDiskSpaceForModel(path string, modelSizeBytes int64, bufferPercent int) error {
+func CheckDiskSpaceForModel(path string, modelSizeBytes int64, bufferPercent int) error {
 	// Add buffer for extraction, temp files, etc.
 	buffer := modelSizeBytes * int64(bufferPercent) / 100
 	required := modelSizeBytes + buffer
@@ -135,7 +135,7 @@ const core.DefaultBufferPercent = 10
 // CheckDiskSpaceForDefaultModel checks disk space for a typical LLM model download.
 // Uses DefaultModelSizeBytes (8GB) with core.DefaultBufferPercent (10%) buffer.
 func CheckDiskSpaceForDefaultModel(path string) error {
-	return core.CheckDiskSpaceForModel(path, DefaultModelSizeBytes, core.DefaultBufferPercent)
+	return CheckDiskSpaceForModel(path, DefaultModelSizeBytes, core.DefaultBufferPercent)
 }
 
 // getParentPath returns the parent directory of a path.

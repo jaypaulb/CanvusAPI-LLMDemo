@@ -59,19 +59,19 @@ func TestCheckFileExists(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := core.CheckFileExists(tt.path)
+			err := CheckFileExists(tt.path)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("core.CheckFileExists(%q) expected error but got nil", tt.path)
+					t.Errorf("CheckFileExists(%q) expected error but got nil", tt.path)
 					return
 				}
 				// Verify it's a FileExistsError
 				if _, ok := err.(*FileExistsError); !ok {
-					t.Errorf("core.CheckFileExists(%q) expected *FileExistsError, got %T", tt.path, err)
+					t.Errorf("CheckFileExists(%q) expected *FileExistsError, got %T", tt.path, err)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("core.CheckFileExists(%q) unexpected error: %v", tt.path, err)
+					t.Errorf("CheckFileExists(%q) unexpected error: %v", tt.path, err)
 				}
 			}
 		})
