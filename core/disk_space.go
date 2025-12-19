@@ -1,7 +1,6 @@
 package core
 
 import (
-	"go_backend/core"
 	"fmt"
 	"os"
 	"runtime"
@@ -130,7 +129,7 @@ func CheckDiskSpaceForModel(path string, modelSizeBytes int64, bufferPercent int
 const DefaultModelSizeBytes int64 = 8 * core.BytesPerGB
 
 // core.DefaultBufferPercent is the default buffer percentage to add for temporary files.
-const core.DefaultBufferPercent = 10
+const DefaultBufferPercent = 10
 
 // CheckDiskSpaceForDefaultModel checks disk space for a typical LLM model download.
 // Uses DefaultModelSizeBytes (8GB) with core.DefaultBufferPercent (10%) buffer.

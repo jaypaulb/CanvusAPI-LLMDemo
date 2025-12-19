@@ -52,7 +52,7 @@ func (c *ConnectivityChecker) WithAllowSelfSignedCerts(allow bool) *Connectivity
 // Returns a ConnectivityResult with detailed information about the check.
 func (c *ConnectivityChecker) CheckServerConnectivity(serverURL string) ConnectivityResult {
 	// First validate the URL format using the atom
-	if err := ValidateServerURL(serverURL); err != nil {
+	if err := core.ValidateServerURL(serverURL); err != nil {
 		return ConnectivityResult{
 			Reachable: false,
 			Message:   "Invalid URL format",
@@ -116,7 +116,7 @@ func (c *ConnectivityChecker) CheckServerConnectivity(serverURL string) Connecti
 // CheckServerConnectivityWithContext tests server connectivity with custom context.
 func (c *ConnectivityChecker) CheckServerConnectivityWithContext(ctx context.Context, serverURL string) ConnectivityResult {
 	// First validate the URL format using the atom
-	if err := ValidateServerURL(serverURL); err != nil {
+	if err := core.ValidateServerURL(serverURL); err != nil {
 		return ConnectivityResult{
 			Reachable: false,
 			Message:   "Invalid URL format",
