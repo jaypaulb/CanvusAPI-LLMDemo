@@ -160,10 +160,10 @@ func TestCheckDiskSpace_InsufficientSpace(t *testing.T) {
 		t.Error("CheckDiskSpace(double of free) should error, but didn't")
 	}
 
-	// Verify it's a DiskSpaceError
-	var diskErr *DiskSpaceError
+	// Verify it's a core.DiskSpaceError
+	var diskErr *core.DiskSpaceError
 	if !errors.As(err, &diskErr) {
-		t.Errorf("Error type = %T, want *DiskSpaceError", err)
+		t.Errorf("Error type = %T, want *core.DiskSpaceError", err)
 	} else {
 		if diskErr.Required != doubleFree {
 			t.Errorf("Required = %d, want %d", diskErr.Required, doubleFree)
@@ -183,14 +183,14 @@ func TestCheckDiskSpaceForModel(t *testing.T) {
 
 	// Test with small model size that should fit
 	smallSize := info.Free / 4
-	err = CheckDiskSpaceForModel(".", smallSize, 10)
+	err = core.CheckDiskSpaceForModel(".", smallSize, 10)
 	if err != nil {
 		t.Errorf("CheckDiskSpaceForModel with small size error: %v", err)
 	}
 
 	// Test with oversized model
 	hugeSize := info.Total * 2
-	err = CheckDiskSpaceForModel(".", hugeSize, 10)
+	err = core.CheckDiskSpaceForModel(".", hugeSize, 10)
 	if err == nil {
 		t.Error("CheckDiskSpaceForModel with huge size should error")
 	}
@@ -201,7 +201,7 @@ func TestCheckDiskSpaceForDefaultModel(t *testing.T) {
 	// We just verify it doesn't panic and returns a sensible error type
 	err := CheckDiskSpaceForDefaultModel(".")
 	if err != nil {
-		var diskErr *DiskSpaceError
+		var diskErr *core.DiskSpaceError
 		if !errors.As(err, &diskErr) {
 			t.Errorf("Unexpected error type: %T", err)
 		}
@@ -209,10 +209,10 @@ func TestCheckDiskSpaceForDefaultModel(t *testing.T) {
 }
 
 func TestDiskSpaceError(t *testing.T) {
-	err := &DiskSpaceError{
+	err := &core.DiskSpaceError{
 		Path:      "/some/path",
-		Required:  BytesPerGB * 8,
-		Available: BytesPerGB * 2,
+		Required:  core.BytesPerGB * 8,
+		Available: core.BytesPerGB * 2,
 		Message:   "insufficient disk space",
 	}
 
@@ -254,11 +254,11 @@ func TestGetParentPath(t *testing.T) {
 
 func TestDiskSpaceConstants(t *testing.T) {
 	// Verify constants are reasonable
-	if DefaultModelSizeBytes != 8*BytesPerGB {
-		t.Errorf("DefaultModelSizeBytes = %d, want %d", DefaultModelSizeBytes, 8*BytesPerGB)
+	if DefaultModelSizeBytes != 8*core.BytesPerGB {
+		t.Errorf("DefaultModelSizeBytes = %d, want %d", DefaultModelSizeBytes, 8*core.BytesPerGB)
 	}
-	if DefaultBufferPercent != 10 {
-		t.Errorf("DefaultBufferPercent = %d, want 10", DefaultBufferPercent)
+	if core.DefaultBufferPercent != 10 {
+		t.Errorf("core.DefaultBufferPercent = %d, want 10", core.DefaultBufferPercent)
 	}
 }
 
@@ -271,6 +271,6 @@ func BenchmarkGetDiskSpace(b *testing.B) {
 
 func BenchmarkCheckDiskSpace(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = CheckDiskSpace(".", BytesPerGB)
+		_ = CheckDiskSpace(".", core.BytesPerGB)
 	}
 }

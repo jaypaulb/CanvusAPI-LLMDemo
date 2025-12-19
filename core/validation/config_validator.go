@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"go_backend/core"
 	"os"
 	"strings"
 )
@@ -34,7 +35,7 @@ func (v *ConfigValidator) WithEnvPath(path string) *ConfigValidator {
 // CheckEnvFile validates that the .env file exists.
 // Returns a ValidationResult with error details if the file is missing.
 func (v *ConfigValidator) CheckEnvFile() ValidationResult {
-	if err := CheckFileExists(v.envPath); err != nil {
+	if err := core.CheckFileExists(v.envPath); err != nil {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Configuration file not found. Copy .env.example to .env and configure your Canvus credentials.",
@@ -50,21 +51,21 @@ func (v *ConfigValidator) CheckEnvFile() ValidationResult {
 // CheckServerURL validates the CANVUS_SERVER environment variable.
 // Returns a ValidationResult with error details if the URL is invalid.
 func (v *ConfigValidator) CheckServerURL() ValidationResult {
-	serverURL := GetEnvOrDefault("CANVUS_SERVER", "")
+	serverURL := core.GetEnvOrDefault("CANVUS_SERVER", "")
 
 	if serverURL == "" {
 		return ValidationResult{
 			Valid:   false,
 			Message: "CANVUS_SERVER required. Set your Canvus instance URL (e.g., https://canvus.example.com)",
-			Error:   ErrMissingConfig("CANVUS_SERVER"),
+			Error:   core.ErrMissingConfig("CANVUS_SERVER"),
 		}
 	}
 
-	if err := ValidateServerURL(serverURL); err != nil {
+	if err := core.ValidateServerURL(serverURL); err != nil {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Invalid Canvus server URL: " + serverURL + ". Example: https://canvus.example.com",
-			Error:   ErrInvalidServerURL(serverURL, err.Error()),
+			Error:   core.ErrInvalidServerURL(serverURL, err.Error()),
 		}
 	}
 
@@ -77,13 +78,13 @@ func (v *ConfigValidator) CheckServerURL() ValidationResult {
 // CheckCanvasID validates the CANVAS_ID environment variable.
 // Returns a ValidationResult with error details if the canvas ID is missing or invalid.
 func (v *ConfigValidator) CheckCanvasID() ValidationResult {
-	canvasID := GetEnvOrDefault("CANVAS_ID", "")
+	canvasID := core.GetEnvOrDefault("CANVAS_ID", "")
 
 	if canvasID == "" {
 		return ValidationResult{
 			Valid:   false,
 			Message: "CANVAS_ID required. Find your canvas ID in the canvas URL or settings.",
-			Error:   ErrMissingConfig("CANVAS_ID"),
+			Error:   core.ErrMissingConfig("CANVAS_ID"),
 		}
 	}
 
@@ -92,7 +93,7 @@ func (v *ConfigValidator) CheckCanvasID() ValidationResult {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Canvas ID invalid",
-			Error:   ErrInvalidCanvasID(canvasID),
+			Error:   core.ErrInvalidCanvasID(canvasID),
 		}
 	}
 

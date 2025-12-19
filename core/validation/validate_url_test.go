@@ -86,18 +86,18 @@ func TestValidateServerURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateServerURL(tt.url)
+			err := core.ValidateServerURL(tt.url)
 			if tt.wantErr {
 				if err == nil {
-					t.Errorf("ValidateServerURL(%q) expected error but got nil", tt.url)
+					t.Errorf("core.ValidateServerURL(%q) expected error but got nil", tt.url)
 					return
 				}
 				if tt.errMsg != "" && !contains(err.Error(), tt.errMsg) {
-					t.Errorf("ValidateServerURL(%q) error = %q, expected to contain %q", tt.url, err.Error(), tt.errMsg)
+					t.Errorf("core.ValidateServerURL(%q) error = %q, expected to contain %q", tt.url, err.Error(), tt.errMsg)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("ValidateServerURL(%q) unexpected error: %v", tt.url, err)
+					t.Errorf("core.ValidateServerURL(%q) unexpected error: %v", tt.url, err)
 				}
 			}
 		})

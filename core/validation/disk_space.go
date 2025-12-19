@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"go_backend/core"
 	"fmt"
 	"os"
 	"runtime"
@@ -26,7 +27,7 @@ type DiskSpaceInfo struct {
 	UsedPercent float64
 }
 
-// DiskSpaceError indicates a disk space problem.
+// core.DiskSpaceError indicates a disk space problem.
 type DiskSpaceError struct {
 	// Path that was checked
 	Path string
@@ -85,15 +86,15 @@ func GetDiskSpace(path string) (*DiskSpaceInfo, error) {
 		Total:          total,
 		Free:           free,
 		Used:           used,
-		TotalFormatted: FormatBytes(total),
-		FreeFormatted:  FormatBytes(free),
-		UsedFormatted:  FormatBytes(used),
+		TotalFormatted: core.FormatBytes(total),
+		FreeFormatted:  core.FormatBytes(free),
+		UsedFormatted:  core.FormatBytes(used),
 		UsedPercent:    usedPercent,
 	}, nil
 }
 
 // CheckDiskSpace verifies there is sufficient disk space at the given path.
-// Returns nil if there is enough space, or a DiskSpaceError if not.
+// Returns nil if there is enough space, or a core.DiskSpaceError if not.
 // requiredBytes is the minimum required free space in bytes.
 func CheckDiskSpace(path string, requiredBytes int64) error {
 	info, err := GetDiskSpace(path)
@@ -107,7 +108,7 @@ func CheckDiskSpace(path string, requiredBytes int64) error {
 			Required:  requiredBytes,
 			Available: info.Free,
 			Message: fmt.Sprintf("insufficient disk space at %s: need %s, have %s free",
-				path, FormatBytes(requiredBytes), info.FreeFormatted),
+				path, core.FormatBytes(requiredBytes), info.FreeFormatted),
 		}
 	}
 
@@ -117,7 +118,7 @@ func CheckDiskSpace(path string, requiredBytes int64) error {
 // CheckDiskSpaceForModel checks if there's enough space to download a model.
 // Uses default model size requirements (~8GB for typical LLM model).
 // bufferPercent is additional buffer space as a percentage (e.g., 10 for 10% extra).
-func CheckDiskSpaceForModel(path string, modelSizeBytes int64, bufferPercent int) error {
+func core.CheckDiskSpaceForModel(path string, modelSizeBytes int64, bufferPercent int) error {
 	// Add buffer for extraction, temp files, etc.
 	buffer := modelSizeBytes * int64(bufferPercent) / 100
 	required := modelSizeBytes + buffer
@@ -126,15 +127,15 @@ func CheckDiskSpaceForModel(path string, modelSizeBytes int64, bufferPercent int
 }
 
 // DefaultModelSizeBytes is the typical size requirement for an LLM model (~8GB).
-const DefaultModelSizeBytes int64 = 8 * BytesPerGB
+const DefaultModelSizeBytes int64 = 8 * core.BytesPerGB
 
-// DefaultBufferPercent is the default buffer percentage to add for temporary files.
-const DefaultBufferPercent = 10
+// core.DefaultBufferPercent is the default buffer percentage to add for temporary files.
+const core.DefaultBufferPercent = 10
 
 // CheckDiskSpaceForDefaultModel checks disk space for a typical LLM model download.
-// Uses DefaultModelSizeBytes (8GB) with DefaultBufferPercent (10%) buffer.
+// Uses DefaultModelSizeBytes (8GB) with core.DefaultBufferPercent (10%) buffer.
 func CheckDiskSpaceForDefaultModel(path string) error {
-	return CheckDiskSpaceForModel(path, DefaultModelSizeBytes, DefaultBufferPercent)
+	return core.CheckDiskSpaceForModel(path, DefaultModelSizeBytes, core.DefaultBufferPercent)
 }
 
 // getParentPath returns the parent directory of a path.

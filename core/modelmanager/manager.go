@@ -71,6 +71,8 @@ type ModelManager struct {
 	baseRetryDelay time.Duration
 	// diskSpaceBuffer is the percentage buffer for disk space checks
 	diskSpaceBuffer int
+	// onProgress is called during downloads to report progress (optional)
+	onProgress func(core.ProgressInfo)
 }
 
 // ModelManagerOption is a functional option for configuring ModelManager.
@@ -110,6 +112,14 @@ func WithModel(model ModelConfig) ModelManagerOption {
 	}
 }
 
+// WithOnProgress sets the progress callback for download operations.
+// The callback receives ProgressInfo updates during model downloads.
+func WithOnProgress(callback func(core.ProgressInfo)) ModelManagerOption {
+	return func(mm *ModelManager) {
+		mm.onProgress = callback
+	}
+}
+
 // NewModelManager creates a new ModelManager with the given configuration.
 // The modelDir parameter specifies where models are stored.
 // The httpClient parameter is used for downloads (if nil, a default client is created).
@@ -118,6 +128,7 @@ func WithModel(model ModelConfig) ModelManagerOption {
 //   - 3 retry attempts with exponential backoff (2s, 4s, 8s)
 //   - 10% disk space buffer
 //   - Default text, vision, and SD models registered
+//   - No progress callback (silent downloads)
 func NewModelManager(modelDir string, httpClient *http.Client, opts ...ModelManagerOption) *ModelManager {
 	if httpClient == nil {
 		httpClient = &http.Client{
@@ -132,6 +143,7 @@ func NewModelManager(modelDir string, httpClient *http.Client, opts ...ModelMana
 		maxRetries:      3,
 		baseRetryDelay:  2 * time.Second,
 		diskSpaceBuffer: core.DefaultBufferPercent,
+		onProgress:      nil, // No progress callback by default
 	}
 
 	// Register default models
@@ -162,6 +174,7 @@ func NewModelManager(modelDir string, httpClient *http.Client, opts ...ModelMana
 //  2. Verifies sufficient disk space
 //  3. Downloads with retries (3 attempts, exponential backoff)
 //  4. Verifies checksum after download (if provided)
+//  5. Reports progress via onProgress callback (if configured)
 func (mm *ModelManager) EnsureModelAvailable(ctx context.Context, modelName string) error {
 	// Lookup model configuration
 	modelCfg, ok := mm.models[modelName]
@@ -302,13 +315,15 @@ func (mm *ModelManager) downloadModel(ctx context.Context, modelCfg ModelConfig,
 }
 
 // attemptDownload performs a single download attempt.
+// If onProgress callback is configured, it will receive progress updates.
 func (mm *ModelManager) attemptDownload(ctx context.Context, modelCfg ModelConfig, destPath string, attempt int) error {
 	opts := core.DownloadOptions{
 		URL:            modelCfg.URL,
 		DestPath:       destPath,
 		ExpectedSHA256: modelCfg.ExpectedSHA256,
 		HTTPClient:     mm.httpClient,
-		Resume:         true, // Enable resume for large model files
+		Resume:         true,           // Enable resume for large model files
+		OnProgress:     mm.onProgress, // Pass through progress callback
 	}
 
 	_, err := core.DownloadWithProgress(ctx, opts)

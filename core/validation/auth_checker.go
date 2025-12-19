@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"go_backend/core"
 	"context"
 	"fmt"
 	"time"
@@ -137,25 +138,25 @@ func (c *AuthChecker) CheckAPIAuthWithContext(ctx context.Context, serverURL, ca
 // CheckCanvusAPIAuth verifies authentication using environment variables.
 // Uses CANVUS_SERVER, CANVAS_ID, and CANVUS_API_KEY.
 func (c *AuthChecker) CheckCanvusAPIAuth() AuthResult {
-	serverURL := GetEnvOrDefault("CANVUS_SERVER", "")
+	serverURL := core.GetEnvOrDefault("CANVUS_SERVER", "")
 	if serverURL == "" {
 		return AuthResult{
 			Authenticated: false,
 			Message:       "CANVUS_SERVER not configured",
-			Error:         ErrMissingConfig("CANVUS_SERVER"),
+			Error:         core.ErrMissingConfig("CANVUS_SERVER"),
 		}
 	}
 
-	canvasID := GetEnvOrDefault("CANVAS_ID", "")
+	canvasID := core.GetEnvOrDefault("CANVAS_ID", "")
 	if canvasID == "" {
 		return AuthResult{
 			Authenticated: false,
 			Message:       "CANVAS_ID not configured",
-			Error:         ErrMissingConfig("CANVAS_ID"),
+			Error:         core.ErrMissingConfig("CANVAS_ID"),
 		}
 	}
 
-	apiKey := GetEnvOrDefault("CANVUS_API_KEY", "")
+	apiKey := core.GetEnvOrDefault("CANVUS_API_KEY", "")
 	if apiKey == "" {
 		return AuthResult{
 			Authenticated: false,

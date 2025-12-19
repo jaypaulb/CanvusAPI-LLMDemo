@@ -86,7 +86,7 @@ func TestSuiteResult_GetErrors(t *testing.T) {
 	result := SuiteResult{
 		Steps: []ValidationStep{
 			{Name: "Step1", Status: StepPassed, Error: nil},
-			{Name: "Step2", Status: StepFailed, Error: ErrMissingConfig("TEST")},
+			{Name: "Step2", Status: StepFailed, Error: core.ErrMissingConfig("TEST")},
 			{Name: "Step3", Status: StepPassed, Error: nil},
 			{Name: "Step4", Status: StepFailed, Error: ErrMissingAuth("test")},
 		},
@@ -103,7 +103,7 @@ func TestSuiteResult_GetFirstError(t *testing.T) {
 		result := SuiteResult{
 			Steps: []ValidationStep{
 				{Name: "Step1", Status: StepPassed, Error: nil},
-				{Name: "Step2", Status: StepFailed, Error: ErrMissingConfig("TEST")},
+				{Name: "Step2", Status: StepFailed, Error: core.ErrMissingConfig("TEST")},
 			},
 		}
 

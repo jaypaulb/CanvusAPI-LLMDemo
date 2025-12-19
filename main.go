@@ -13,6 +13,8 @@ import (
 
 	"go_backend/canvusapi"
 	"go_backend/core"
+	"go_backend/core/modelmanager"
+	"go_backend/core/validation"
 	"go_backend/db"
 	"go_backend/imagegen"
 	"go_backend/llamaruntime"
@@ -659,7 +661,7 @@ func runStartupValidation(logger *logging.Logger, isDevelopment bool) int {
 	allowSelfSigned := os.Getenv("ALLOW_SELF_SIGNED_CERTS") == "true"
 
 	// Run configuration validation suite
-	suite := core.NewValidationSuite().
+	suite := validation.NewValidationSuite().
 		WithAllowSelfSignedCerts(allowSelfSigned).
 		WithShowProgress(true)
 
@@ -674,7 +676,7 @@ func runStartupValidation(logger *logging.Logger, isDevelopment bool) int {
 
 		// Log individual failures for debugging
 		for _, step := range result.Steps {
-			if step.Status == core.StepFailed {
+			if step.Status == validation.StepFailed {
 				logger.Error("Validation step failed",
 					zap.String("step", step.Name),
 					zap.String("message", step.Message),
@@ -726,7 +728,7 @@ func ensureModelsAvailable(logger *logging.Logger) error {
 		AllowSelfSignedCerts: os.Getenv("ALLOW_SELF_SIGNED_CERTS") == "true",
 	}, 0) // No timeout for large downloads
 
-	modelManager := core.NewModelManager(modelDir, httpClient)
+	modelManager := modelmanager.NewModelManager(modelDir, httpClient)
 
 	// Create context for model operations (can be cancelled via signal)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -781,7 +783,7 @@ func getRequiredModels() []string {
 
 	// Default: check text model if model dir is configured
 	if os.Getenv("LOCAL_MODEL_DIR") != "" {
-		return []string{core.DefaultTextModel.Name}
+		return []string{modelmanager.DefaultTextModel.Name}
 	}
 
 	return nil
