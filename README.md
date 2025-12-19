@@ -189,6 +189,19 @@ If you prefer to build from source:
    GOOS=windows GOARCH=amd64 go build -o canvusapi-windows-amd64.exe .
    ```
 
+
+   **Optional: Build with Stable Diffusion Support**
+   
+   To enable local image generation capabilities, use the dedicated SD build scripts:
+   ```bash
+   # Linux
+   ./scripts/build-sd-linux.sh --tarball
+   
+   # Windows (PowerShell)
+   .\scripts\build-sd-windows.ps1 -Zip
+   ```
+   
+   See [docs/BUILD_WITH_SD.md](docs/BUILD_WITH_SD.md) for complete instructions.
 5. **Configure and run** (see Quick Start step 2-4)
 
 ## Configuration
