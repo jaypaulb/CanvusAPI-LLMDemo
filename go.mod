@@ -19,6 +19,7 @@ require (
 )
 
 require (
+	github.com/NVIDIA/go-nvml v0.13.0-1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
