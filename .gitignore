@@ -46,6 +46,9 @@ tmp/
 canvusapi-*
 canvuslocallm
 canvuslocallm_*
+go_backend
+go_backend.test
+*.test
 !canvusapi/canvusapi.go
 
 # Build output directories
