@@ -158,12 +158,18 @@ static inline int llama_has_cuda(void) {
 import "C"
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
+
+	"github.com/NVIDIA/go-nvml/pkg/nvml"
 )
 
 // llamaBackend manages global llama.cpp initialization state.
@@ -784,10 +790,129 @@ type GPUMemoryInfo struct {
 	LastUpdate time.Time // When this info was collected
 }
 
+// nvmlState tracks NVML initialization state.
+var (
+	nvmlInitOnce   sync.Once
+	nvmlInitialized bool
+	nvmlInitErr    error
+)
+
+// initNVML initializes the NVML library once.
+// Safe to call multiple times; initialization happens only once.
+func initNVML() error {
+	nvmlInitOnce.Do(func() {
+		ret := nvml.Init()
+		if ret != nvml.SUCCESS {
+			nvmlInitErr = fmt.Errorf("NVML init failed: %v", nvml.ErrorString(ret))
+			return
+		}
+		nvmlInitialized = true
+	})
+	return nvmlInitErr
+}
+
+// getGPUMemoryViaNVML queries GPU memory using NVML library.
+// Returns memory info for the first GPU (device 0).
+func getGPUMemoryViaNVML() (*GPUMemoryInfo, error) {
+	// Initialize NVML if not already done
+	if err := initNVML(); err != nil {
+		return nil, fmt.Errorf("NVML initialization: %w", err)
+	}
+
+	// Get device handle for GPU 0
+	device, ret := nvml.DeviceGetHandleByIndex(0)
+	if ret != nvml.SUCCESS {
+		return nil, fmt.Errorf("failed to get device handle: %v", nvml.ErrorString(ret))
+	}
+
+	// Query memory info
+	memInfo, ret := device.GetMemoryInfo()
+	if ret != nvml.SUCCESS {
+		return nil, fmt.Errorf("failed to get memory info: %v", nvml.ErrorString(ret))
+	}
+
+	// Calculate usage percentage
+	usedPct := 0.0
+	if memInfo.Total > 0 {
+		usedPct = float64(memInfo.Used) / float64(memInfo.Total) * 100.0
+	}
+
+	return &GPUMemoryInfo{
+		Used:       int64(memInfo.Used),
+		Total:      int64(memInfo.Total),
+		Free:       int64(memInfo.Free),
+		UsedPct:    usedPct,
+		LastUpdate: time.Now(),
+	}, nil
+}
+
+// getGPUMemoryViaNvidiaSMI queries GPU memory by parsing nvidia-smi output.
+// This is a fallback when NVML is not available.
+func getGPUMemoryViaNvidiaSMI() (*GPUMemoryInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Query memory.used and memory.total in MiB
+	cmd := exec.CommandContext(ctx, "nvidia-smi",
+		"--query-gpu=memory.used,memory.total",
+		"--format=csv,noheader,nounits")
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("nvidia-smi failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	// Parse output (format: "used, total")
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		return nil, fmt.Errorf("empty nvidia-smi output")
+	}
+
+	parts := strings.Split(output, ",")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("unexpected nvidia-smi output format: %s", output)
+	}
+
+	// Parse used memory (MiB)
+	usedMiB, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse used memory: %w", err)
+	}
+
+	// Parse total memory (MiB)
+	totalMiB, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse total memory: %w", err)
+	}
+
+	// Convert MiB to bytes
+	const mibToBytes = 1024 * 1024
+	total := int64(totalMiB * mibToBytes)
+	used := int64(usedMiB * mibToBytes)
+	free := total - used
+
+	// Calculate usage percentage
+	usedPct := 0.0
+	if total > 0 {
+		usedPct = float64(used) / float64(total) * 100.0
+	}
+
+	return &GPUMemoryInfo{
+		Used:       used,
+		Total:      total,
+		Free:       free,
+		UsedPct:    usedPct,
+		LastUpdate: time.Now(),
+	}, nil
+}
+
 // getGPUMemory returns GPU memory usage information.
-// This uses nvidia-smi or CUDA APIs to query GPU memory.
-// NOTE: This is a placeholder implementation. Full GPU monitoring
-// will be implemented using nvidia-ml-go or direct CUDA queries.
+// Tries NVML first, falls back to nvidia-smi if NVML is unavailable.
+// Returns an error if CUDA is not available or if both methods fail.
 func getGPUMemory() (*GPUMemoryInfo, error) {
 	// Check if CUDA is available
 	hasCUDA := int(C.llama_has_cuda())
@@ -800,20 +925,25 @@ func getGPUMemory() (*GPUMemoryInfo, error) {
 		}
 	}
 
-	// TODO: Implement actual GPU memory query using:
-	// - nvidia-ml-go library
-	// - Direct CUDA API calls via CGo
-	// - Parsing nvidia-smi output as fallback
-	//
-	// For now, return placeholder indicating GPU is available
-	// but memory stats are not implemented.
-	return &GPUMemoryInfo{
-		Used:       0,
-		Total:      0,
-		Free:       0,
-		UsedPct:    0,
-		LastUpdate: time.Now(),
-	}, nil
+	// Try NVML first (more efficient and accurate)
+	info, err := getGPUMemoryViaNVML()
+	if err == nil {
+		return info, nil
+	}
+
+	// NVML failed, try nvidia-smi fallback
+	info, smiErr := getGPUMemoryViaNvidiaSMI()
+	if smiErr == nil {
+		return info, nil
+	}
+
+	// Both methods failed
+	return nil, &LlamaError{
+		Op:      "getGPUMemory",
+		Code:    -1,
+		Message: fmt.Sprintf("failed to query GPU memory (NVML: %v, nvidia-smi: %v)", err, smiErr),
+		Err:     ErrGPUNotAvailable,
+	}
 }
 
 // hasCUDA returns true if llama.cpp was built with CUDA support.
