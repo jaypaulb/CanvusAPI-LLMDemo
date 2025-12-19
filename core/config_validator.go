@@ -37,7 +37,7 @@ func (v *ConfigValidator) CheckEnvFile() ValidationResult {
 	if err := CheckFileExists(v.envPath); err != nil {
 		return ValidationResult{
 			Valid:   false,
-			Message: "Environment file missing",
+			Message: "Configuration file not found. Copy .env.example to .env and configure your Canvus credentials.",
 			Error:   ErrEnvFileMissing(v.envPath),
 		}
 	}
@@ -55,7 +55,7 @@ func (v *ConfigValidator) CheckServerURL() ValidationResult {
 	if serverURL == "" {
 		return ValidationResult{
 			Valid:   false,
-			Message: "Server URL not configured",
+			Message: "CANVUS_SERVER required. Set your Canvus instance URL (e.g., https://canvus.example.com)",
 			Error:   ErrMissingConfig("CANVUS_SERVER"),
 		}
 	}
@@ -63,7 +63,7 @@ func (v *ConfigValidator) CheckServerURL() ValidationResult {
 	if err := ValidateServerURL(serverURL); err != nil {
 		return ValidationResult{
 			Valid:   false,
-			Message: "Server URL invalid",
+			Message: "Invalid Canvus server URL: " + serverURL + ". Example: https://canvus.example.com",
 			Error:   ErrInvalidServerURL(serverURL, err.Error()),
 		}
 	}
@@ -82,7 +82,7 @@ func (v *ConfigValidator) CheckCanvasID() ValidationResult {
 	if canvasID == "" {
 		return ValidationResult{
 			Valid:   false,
-			Message: "Canvas ID not configured",
+			Message: "CANVAS_ID required. Find your canvas ID in the canvas URL or settings.",
 			Error:   ErrMissingConfig("CANVAS_ID"),
 		}
 	}
@@ -114,7 +114,7 @@ func (v *ConfigValidator) CheckAuthCredentials() ValidationResult {
 	if err := ValidateAuthCredentials(creds); err != nil {
 		return ValidationResult{
 			Valid:   false,
-			Message: "Canvus authentication missing",
+			Message: "Canvus authentication required. Set CANVUS_API_KEY or CANVUS_USERNAME/CANVUS_PASSWORD",
 			Error:   ErrMissingAuth("canvus"),
 		}
 	}
@@ -127,15 +127,15 @@ func (v *ConfigValidator) CheckAuthCredentials() ValidationResult {
 
 // CheckOpenAICredentials validates that OpenAI/LLM credentials are configured.
 // Returns a ValidationResult with error details if the API key is missing.
-// Note: This is optional if using a local LLM that doesn't require a key.
+// NOTE: This is OPTIONAL for local-first deployment. OpenAI key is only needed for cloud fallback.
 func (v *ConfigValidator) CheckOpenAICredentials() ValidationResult {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 
-	// Empty API key might be okay for local LLM services
+	// Empty API key is acceptable for local LLM services
 	if apiKey == "" {
 		return ValidationResult{
 			Valid:   false,
-			Message: "OpenAI API key not configured",
+			Message: "OpenAI API key not configured (optional - only needed for cloud fallback)",
 			Error:   ErrMissingAuth("openai"),
 		}
 	}
@@ -155,18 +155,19 @@ func (v *ConfigValidator) CheckOpenAICredentials() ValidationResult {
 }
 
 // ValidateAll runs all configuration checks and returns all results.
-// This provides a comprehensive view of the configuration state.
+// This provides a comprehensive view of the configuration state, including optional settings.
 func (v *ConfigValidator) ValidateAll() []ValidationResult {
 	return []ValidationResult{
 		v.CheckEnvFile(),
 		v.CheckServerURL(),
 		v.CheckCanvasID(),
 		v.CheckAuthCredentials(),
-		v.CheckOpenAICredentials(),
+		v.CheckOpenAICredentials(), // Included but not required
 	}
 }
 
-// ValidateRequired runs only the required configuration checks.
+// ValidateRequired runs only the required configuration checks for local-first deployment.
+// This does NOT check OpenAI credentials - only Canvus connection settings.
 // Returns the first validation failure, or nil if all required checks pass.
 func (v *ConfigValidator) ValidateRequired() error {
 	// Check env file first
@@ -189,15 +190,25 @@ func (v *ConfigValidator) ValidateRequired() error {
 		return result.Error
 	}
 
+	// NOTE: OpenAI credentials are NOT checked here - only needed for cloud fallback
+	// Handlers should check config.OpenAIAPIKey != "" before attempting cloud operations
+
 	return nil
 }
 
+// ValidateMinimal validates only the absolute minimum required configuration.
+// This is the same as ValidateRequired for zero-config local deployment.
+func (v *ConfigValidator) ValidateMinimal() error {
+	return v.ValidateRequired()
+}
+
 // IsValid returns true if all required configuration is valid.
+// This checks ONLY required settings (Canvus credentials), not optional cloud APIs.
 func (v *ConfigValidator) IsValid() bool {
 	return v.ValidateRequired() == nil
 }
 
-// GetFirstError returns the first validation error, or nil if all checks pass.
+// GetFirstError returns the first validation error, or nil if all required checks pass.
 func (v *ConfigValidator) GetFirstError() error {
 	return v.ValidateRequired()
 }
