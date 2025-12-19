@@ -73,7 +73,7 @@ func (c *ConnectivityChecker) CheckServerConnectivity(serverURL string) Connecti
 		return ConnectivityResult{
 			Reachable: false,
 			Message:   "Failed to create request",
-			Error:     ErrServerUnreachable(serverURL, err.Error()),
+			Error:     core.ErrServerUnreachable(serverURL, err.Error()),
 		}
 	}
 
@@ -91,14 +91,14 @@ func (c *ConnectivityChecker) CheckServerConnectivity(serverURL string) Connecti
 				Reachable: false,
 				Message:   "Connection timed out",
 				Latency:   latency,
-				Error:     ErrServerUnreachable(serverURL, fmt.Sprintf("connection timed out after %v", c.timeout)),
+				Error:     core.ErrServerUnreachable(serverURL, fmt.Sprintf("connection timed out after %v", c.timeout)),
 			}
 		}
 		return ConnectivityResult{
 			Reachable: false,
 			Message:   "Connection failed",
 			Latency:   latency,
-			Error:     ErrServerUnreachable(serverURL, err.Error()),
+			Error:     core.ErrServerUnreachable(serverURL, err.Error()),
 		}
 	}
 	defer resp.Body.Close()
@@ -133,7 +133,7 @@ func (c *ConnectivityChecker) CheckServerConnectivityWithContext(ctx context.Con
 		return ConnectivityResult{
 			Reachable: false,
 			Message:   "Failed to create request",
-			Error:     ErrServerUnreachable(serverURL, err.Error()),
+			Error:     core.ErrServerUnreachable(serverURL, err.Error()),
 		}
 	}
 
@@ -150,14 +150,14 @@ func (c *ConnectivityChecker) CheckServerConnectivityWithContext(ctx context.Con
 				Reachable: false,
 				Message:   "Request cancelled or timed out",
 				Latency:   latency,
-				Error:     ErrServerUnreachable(serverURL, ctx.Err().Error()),
+				Error:     core.ErrServerUnreachable(serverURL, ctx.Err().Error()),
 			}
 		}
 		return ConnectivityResult{
 			Reachable: false,
 			Message:   "Connection failed",
 			Latency:   latency,
-			Error:     ErrServerUnreachable(serverURL, err.Error()),
+			Error:     core.ErrServerUnreachable(serverURL, err.Error()),
 		}
 	}
 	defer resp.Body.Close()

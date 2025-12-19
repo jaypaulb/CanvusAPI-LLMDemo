@@ -88,7 +88,7 @@ func TestSuiteResult_GetErrors(t *testing.T) {
 			{Name: "Step1", Status: StepPassed, Error: nil},
 			{Name: "Step2", Status: StepFailed, Error: core.ErrMissingConfig("TEST")},
 			{Name: "Step3", Status: StepPassed, Error: nil},
-			{Name: "Step4", Status: StepFailed, Error: ErrMissingAuth("test")},
+			{Name: "Step4", Status: StepFailed, Error: core.ErrMissingAuth("test")},
 		},
 	}
 

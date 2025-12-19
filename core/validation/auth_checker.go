@@ -55,12 +55,12 @@ func (c *AuthChecker) WithAllowSelfSignedCerts(allow bool) *AuthChecker {
 // Returns an AuthResult with detailed information about the check.
 func (c *AuthChecker) CheckAPIAuth(serverURL, canvasID, apiKey string) AuthResult {
 	// First validate credentials format using the atom
-	creds := AuthCredentials{APIKey: apiKey}
-	if err := ValidateAuthCredentials(creds); err != nil {
+	creds := core.AuthCredentials{APIKey: apiKey}
+	if err := core.ValidateAuthCredentials(creds); err != nil {
 		return AuthResult{
 			Authenticated: false,
 			Message:       "Invalid credentials format",
-			Error:         ErrMissingAuth("canvus"),
+			Error:         core.ErrMissingAuth("canvus"),
 		}
 	}
 
@@ -77,26 +77,26 @@ func (c *AuthChecker) CheckAPIAuth(serverURL, canvasID, apiKey string) AuthResul
 				return AuthResult{
 					Authenticated: false,
 					Message:       "Authentication failed: invalid API key",
-					Error:         ErrAuthFailed("canvus", "invalid or expired API key"),
+					Error:         core.ErrAuthFailed("canvus", "invalid or expired API key"),
 				}
 			case 403:
 				return AuthResult{
 					Authenticated: false,
 					Message:       "Authentication failed: access denied",
-					Error:         ErrAuthFailed("canvus", "access denied - check permissions"),
+					Error:         core.ErrAuthFailed("canvus", "access denied - check permissions"),
 				}
 			case 404:
 				// Canvas not found, but auth might be okay
 				return AuthResult{
 					Authenticated: true, // Key is valid, just canvas doesn't exist
 					Message:       "API key valid but canvas not found",
-					Error:         ErrCanvasNotFound(canvasID),
+					Error:         core.ErrCanvasNotFound(canvasID),
 				}
 			default:
 				return AuthResult{
 					Authenticated: false,
 					Message:       fmt.Sprintf("API error: %d", apiErr.StatusCode),
-					Error:         ErrAuthFailed("canvus", apiErr.Message),
+					Error:         core.ErrAuthFailed("canvus", apiErr.Message),
 				}
 			}
 		}
@@ -104,7 +104,7 @@ func (c *AuthChecker) CheckAPIAuth(serverURL, canvasID, apiKey string) AuthResul
 		return AuthResult{
 			Authenticated: false,
 			Message:       "Connection failed",
-			Error:         ErrServerUnreachable(serverURL, err.Error()),
+			Error:         core.ErrServerUnreachable(serverURL, err.Error()),
 		}
 	}
 
@@ -130,7 +130,7 @@ func (c *AuthChecker) CheckAPIAuthWithContext(ctx context.Context, serverURL, ca
 		return AuthResult{
 			Authenticated: false,
 			Message:       "Authentication check cancelled or timed out",
-			Error:         ErrServerUnreachable(serverURL, ctx.Err().Error()),
+			Error:         core.ErrServerUnreachable(serverURL, ctx.Err().Error()),
 		}
 	}
 }
@@ -161,7 +161,7 @@ func (c *AuthChecker) CheckCanvusAPIAuth() AuthResult {
 		return AuthResult{
 			Authenticated: false,
 			Message:       "CANVUS_API_KEY not configured",
-			Error:         ErrMissingAuth("canvus"),
+			Error:         core.ErrMissingAuth("canvus"),
 		}
 	}
 

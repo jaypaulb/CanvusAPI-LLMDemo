@@ -39,7 +39,7 @@ func (v *ConfigValidator) CheckEnvFile() ValidationResult {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Configuration file not found. Copy .env.example to .env and configure your Canvus credentials.",
-			Error:   ErrEnvFileMissing(v.envPath),
+			Error:   core.ErrEnvFileMissing(v.envPath),
 		}
 	}
 	return ValidationResult{
@@ -106,17 +106,17 @@ func (v *ConfigValidator) CheckCanvasID() ValidationResult {
 // CheckAuthCredentials validates that Canvus authentication credentials are configured.
 // Returns a ValidationResult with error details if authentication is missing.
 func (v *ConfigValidator) CheckAuthCredentials() ValidationResult {
-	creds := AuthCredentials{
+	creds := core.AuthCredentials{
 		APIKey:   os.Getenv("CANVUS_API_KEY"),
 		Username: os.Getenv("CANVUS_USERNAME"),
 		Password: os.Getenv("CANVUS_PASSWORD"),
 	}
 
-	if err := ValidateAuthCredentials(creds); err != nil {
+	if err := core.ValidateAuthCredentials(creds); err != nil {
 		return ValidationResult{
 			Valid:   false,
 			Message: "Canvus authentication required. Set CANVUS_API_KEY or CANVUS_USERNAME/CANVUS_PASSWORD",
-			Error:   ErrMissingAuth("canvus"),
+			Error:   core.ErrMissingAuth("canvus"),
 		}
 	}
 
@@ -137,15 +137,15 @@ func (v *ConfigValidator) CheckOpenAICredentials() ValidationResult {
 		return ValidationResult{
 			Valid:   false,
 			Message: "OpenAI API key not configured (optional - only needed for cloud fallback)",
-			Error:   ErrMissingAuth("openai"),
+			Error:   core.ErrMissingAuth("openai"),
 		}
 	}
 
-	if err := ValidateOpenAIAPIKey(apiKey); err != nil {
+	if err := core.ValidateOpenAIAPIKey(apiKey); err != nil {
 		return ValidationResult{
 			Valid:   false,
 			Message: "OpenAI API key invalid",
-			Error:   ErrMissingAuth("openai"),
+			Error:   core.ErrMissingAuth("openai"),
 		}
 	}
 

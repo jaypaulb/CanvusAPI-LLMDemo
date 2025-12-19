@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -712,8 +713,98 @@ func shouldCheckModels() bool {
 	return modelDir != ""
 }
 
+// displayProgressBar renders a progress bar to the console.
+// This is a pure function (atom) that generates a visual progress representation.
+//
+// Parameters:
+//   - info: Progress information from download
+//   - barWidth: Width of the progress bar in characters (default 40)
+//
+// Example output:
+//   [=========>          ] 45.2% (1.2 GB / 2.7 GB) @ 5.4 MB/s | ETA: 4m23s
+func displayProgressBar(info core.ProgressInfo, barWidth int) string {
+	if barWidth <= 0 {
+		barWidth = 40
+	}
+
+	// Calculate filled portion of bar
+	filled := int(float64(barWidth) * info.Percent / 100.0)
+	if filled > barWidth {
+		filled = barWidth
+	}
+	if filled < 0 {
+		filled = 0
+	}
+
+	// Build progress bar string
+	var bar strings.Builder
+	bar.WriteString("[")
+
+	// Filled portion
+	for i := 0; i < filled; i++ {
+		bar.WriteString("=")
+	}
+
+	// Arrow head (if not complete)
+	if filled < barWidth && info.Percent < 100 {
+		bar.WriteString(">")
+		filled++
+	}
+
+	// Empty portion
+	for i := filled; i < barWidth; i++ {
+		bar.WriteString(" ")
+	}
+
+	bar.WriteString("]")
+
+	// Add stats: percentage, sizes, speed, ETA
+	bar.WriteString(fmt.Sprintf(" %.1f%% (%s / %s)",
+		info.Percent,
+		info.DownloadedFormatted,
+		info.TotalFormatted,
+	))
+
+	if info.SpeedBytesPerSec > 0 {
+		bar.WriteString(fmt.Sprintf(" @ %s", info.SpeedFormatted))
+	}
+
+	if info.ETA > 0 {
+		// Format ETA nicely
+		etaStr := formatDuration(info.ETA)
+		bar.WriteString(fmt.Sprintf(" | ETA: %s", etaStr))
+	}
+
+	return bar.String()
+}
+
+// formatDuration formats a duration into a human-readable string.
+// This is an atom function for duration formatting.
+//
+// Examples:
+//   - 90 seconds -> "1m30s"
+//   - 3665 seconds -> "1h1m"
+//   - 45 seconds -> "45s"
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "0s"
+	}
+
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%dh%dm", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm%ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 // ensureModelsAvailable checks that required AI models are available.
-// If models are missing, attempts to download them.
+// If models are missing, attempts to download them with progress display.
 func ensureModelsAvailable(logger *logging.Logger) error {
 	modelDir := os.Getenv("LOCAL_MODEL_DIR")
 	if modelDir == "" {
@@ -723,12 +814,33 @@ func ensureModelsAvailable(logger *logging.Logger) error {
 
 	logger.Info("Checking model availability...", zap.String("model_dir", modelDir))
 
-	// Create model manager with default settings
+	// Create model manager with progress callback
 	httpClient := core.GetHTTPClient(&core.Config{
 		AllowSelfSignedCerts: os.Getenv("ALLOW_SELF_SIGNED_CERTS") == "true",
 	}, 0) // No timeout for large downloads
 
-	modelManager := modelmanager.NewModelManager(modelDir, httpClient)
+	// Track last progress update time to avoid flooding console
+	var lastProgressTime time.Time
+	progressCallback := func(info core.ProgressInfo) {
+		// Update progress bar every 500ms to avoid console spam
+		now := time.Now()
+		if now.Sub(lastProgressTime) < 500*time.Millisecond && info.Percent < 100 {
+			return
+		}
+		lastProgressTime = now
+
+		// Clear line and print progress bar
+		fmt.Printf("\r%s", displayProgressBar(info, 40))
+		if info.Percent >= 100 {
+			fmt.Println() // New line when complete
+		}
+	}
+
+	modelManager := modelmanager.NewModelManager(
+		modelDir,
+		httpClient,
+		modelmanager.WithOnProgress(progressCallback),
+	)
 
 	// Create context for model operations (can be cancelled via signal)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -748,13 +860,16 @@ func ensureModelsAvailable(logger *logging.Logger) error {
 
 	for _, modelName := range modelsToCheck {
 		logger.Info("Ensuring model available", zap.String("model", modelName))
+		fmt.Printf("Downloading model: %s\n", modelName)
 
 		if err := modelManager.EnsureModelAvailable(ctx, modelName); err != nil {
+			fmt.Println() // Ensure we're on a new line after any progress bar
 			return fmt.Errorf("model %q not available: %w", modelName, err)
 		}
 
 		modelPath, _ := modelManager.GetModelPath(modelName)
 		logger.Info("Model ready", zap.String("model", modelName), zap.String("path", modelPath))
+		fmt.Printf("Model ready: %s\n", modelPath)
 	}
 
 	// Reset signal handling (will be set up again in main)

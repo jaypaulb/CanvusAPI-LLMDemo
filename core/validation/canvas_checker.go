@@ -77,25 +77,25 @@ func (c *CanvasChecker) CheckCanvasAccess(serverURL, canvasID, apiKey string) Ca
 				return CanvasAccessResult{
 					Accessible: false,
 					Message:    "Authentication failed",
-					Error:      ErrAuthFailed("canvus", "invalid or expired API key"),
+					Error:      core.ErrAuthFailed("canvus", "invalid or expired API key"),
 				}
 			case 403:
 				return CanvasAccessResult{
 					Accessible: false,
 					Message:    "Access denied to canvas",
-					Error:      ErrAuthFailed("canvus", "access denied - check permissions for this canvas"),
+					Error:      core.ErrAuthFailed("canvus", "access denied - check permissions for this canvas"),
 				}
 			case 404:
 				return CanvasAccessResult{
 					Accessible: false,
 					Message:    "Canvas not found",
-					Error:      ErrCanvasNotFound(canvasID),
+					Error:      core.ErrCanvasNotFound(canvasID),
 				}
 			default:
 				return CanvasAccessResult{
 					Accessible: false,
 					Message:    fmt.Sprintf("API error: %d", apiErr.StatusCode),
-					Error:      ErrServerUnreachable(serverURL, apiErr.Message),
+					Error:      core.ErrServerUnreachable(serverURL, apiErr.Message),
 				}
 			}
 		}
@@ -103,7 +103,7 @@ func (c *CanvasChecker) CheckCanvasAccess(serverURL, canvasID, apiKey string) Ca
 		return CanvasAccessResult{
 			Accessible: false,
 			Message:    "Connection failed",
-			Error:      ErrServerUnreachable(serverURL, err.Error()),
+			Error:      core.ErrServerUnreachable(serverURL, err.Error()),
 		}
 	}
 
@@ -131,7 +131,7 @@ func (c *CanvasChecker) CheckCanvasAccessWithContext(ctx context.Context, server
 		return CanvasAccessResult{
 			Accessible: false,
 			Message:    "Canvas check cancelled or timed out",
-			Error:      ErrServerUnreachable(serverURL, ctx.Err().Error()),
+			Error:      core.ErrServerUnreachable(serverURL, ctx.Err().Error()),
 		}
 	}
 }
@@ -162,7 +162,7 @@ func (c *CanvasChecker) CheckCanvusCanvas() CanvasAccessResult {
 		return CanvasAccessResult{
 			Accessible: false,
 			Message:    "CANVUS_API_KEY not configured",
-			Error:      ErrMissingAuth("canvus"),
+			Error:      core.ErrMissingAuth("canvus"),
 		}
 	}
 
