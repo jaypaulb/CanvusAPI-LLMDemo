@@ -38,6 +38,8 @@ type Monitor struct {
 	metricsStoreMux sync.RWMutex
 	taskBroadcaster metrics.TaskBroadcaster
 	broadcasterMux  sync.RWMutex
+	handlerDeps     *HandlerDependencies // Dependency injection for handlers
+	handlerDepsMux  sync.RWMutex
 }
 
 // WidgetState tracks widget information
@@ -63,13 +65,14 @@ var sharedCanvas SharedCanvas
 // NewMonitor creates a new Monitor instance
 func NewMonitor(client *canvusapi.Client, cfg *core.Config, logger *logging.Logger, repo *db.Repository) *Monitor {
 	return &Monitor{
-		client:     client,
-		config:     cfg,
-		logger:     logger,
-		repository: repo,
-		done:       make(chan struct{}),
-		widgets:    make(map[string]map[string]interface{}),
-		widgetsMux: sync.RWMutex{},
+		client:      client,
+		config:      cfg,
+		logger:      logger,
+		repository:  repo,
+		done:        make(chan struct{}),
+		widgets:     make(map[string]map[string]interface{}),
+		widgetsMux:  sync.RWMutex{},
+		handlerDeps: NewHandlerDependencies(nil, nil), // Initialize with nil, will be set via SetMetricsStore/SetTaskBroadcaster
 	}
 }
 
@@ -89,6 +92,14 @@ func (m *Monitor) SetMetricsStore(store metrics.MetricsCollector) {
 	m.metricsStoreMux.Lock()
 	defer m.metricsStoreMux.Unlock()
 	m.metricsStore = store
+
+	// Also update handlerDeps
+	m.handlerDepsMux.Lock()
+	defer m.handlerDepsMux.Unlock()
+	if m.handlerDeps != nil {
+		m.handlerDeps.SetMetrics(store, m.taskBroadcaster)
+	}
+
 	m.logger.Info("metrics store set for task tracking")
 }
 
@@ -105,6 +116,14 @@ func (m *Monitor) SetTaskBroadcaster(broadcaster metrics.TaskBroadcaster) {
 	m.broadcasterMux.Lock()
 	defer m.broadcasterMux.Unlock()
 	m.taskBroadcaster = broadcaster
+
+	// Also update handlerDeps
+	m.handlerDepsMux.Lock()
+	defer m.handlerDepsMux.Unlock()
+	if m.handlerDeps != nil {
+		m.handlerDeps.SetMetrics(m.metricsStore, broadcaster)
+	}
+
 	m.logger.Info("task broadcaster set for real-time updates")
 }
 
@@ -113,6 +132,13 @@ func (m *Monitor) getTaskBroadcaster() metrics.TaskBroadcaster {
 	m.broadcasterMux.RLock()
 	defer m.broadcasterMux.RUnlock()
 	return m.taskBroadcaster
+}
+
+// getHandlerDeps returns a copy of the handler dependencies for safe concurrent use.
+func (m *Monitor) getHandlerDeps() *HandlerDependencies {
+	m.handlerDepsMux.RLock()
+	defer m.handlerDepsMux.RUnlock()
+	return m.handlerDeps
 }
 
 // getImagegenProcessor returns the imagegen processor if available.
@@ -407,6 +433,9 @@ func (m *Monitor) saveSharedCanvasData(data Update) error {
 
 // routeUpdate directs updates to appropriate handlers
 func (m *Monitor) routeUpdate(update Update) error {
+	// Get handler dependencies for this update
+	deps := m.getHandlerDeps()
+
 	switch update["widget_type"].(string) {
 	case "Note":
 		// Check for direct image prompt {{image:...}}
@@ -415,13 +444,13 @@ func (m *Monitor) routeUpdate(update Update) error {
 			return nil
 		}
 		// Fall back to existing text/image classification flow
-		go handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
+		go handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient(), deps)
 	case "Image":
 		if title, ok := update["title"].(string); ok {
 			if strings.HasPrefix(title, "Snapshot at") {
-				go handleSnapshot(update, m.client, m.config, m.logger, m.repository)
+				go handleSnapshot(update, m.client, m.config, m.logger, m.repository, deps)
 			} else if strings.HasPrefix(title, "AI_Icon_") {
-				return m.handleAIIcon(update)
+				return m.handleAIIcon(update, deps)
 			}
 		}
 	}
@@ -489,7 +518,7 @@ func (m *Monitor) handleImagePrompt(update Update, prompt string) {
 	proc := m.getImagegenProcessor()
 	if proc == nil {
 		log.Debug("imagegen processor not available, falling back to handleNote")
-		handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
+		handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient(), m.getHandlerDeps())
 		return
 	}
 
@@ -498,7 +527,7 @@ func (m *Monitor) handleImagePrompt(update Update, prompt string) {
 	if err != nil {
 		log.Error("failed to create parent widget for image generation", zap.Error(err))
 		// Fall back to handleNote which has error handling
-		handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
+		handleNote(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient(), m.getHandlerDeps())
 		return
 	}
 
@@ -607,7 +636,7 @@ func truncatePrompt(text string, maxLen int) string {
 }
 
 // handleAIIcon processes AI_Icon_ image updates
-func (m *Monitor) handleAIIcon(update Update) error {
+func (m *Monitor) handleAIIcon(update Update, deps *HandlerDependencies) error {
 	title, _ := update["title"].(string)
 
 	// Extract the action from the title
@@ -616,9 +645,9 @@ func (m *Monitor) handleAIIcon(update Update) error {
 	// Route to appropriate precis handler based on action
 	switch action {
 	case "PDFPrecis":
-		go handlePDFPrecis(update, m.client, m.config, m.logger, m.repository)
+		go handlePDFPrecis(update, m.client, m.config, m.logger, m.repository, deps)
 	case "CanvusPrecis":
-		go handleCanvusPrecis(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient())
+		go handleCanvusPrecis(update, m.client, m.config, m.logger, m.repository, m.getLlamaClient(), deps)
 	case "Image_Analysis":
 		llamaClient := m.getLlamaClient()
 		if llamaClient == nil {
@@ -626,7 +655,7 @@ func (m *Monitor) handleAIIcon(update Update) error {
 				zap.String("action", action))
 			return nil
 		}
-		go handleImageAnalysis(update, m.client, m.config, m.logger, m.repository, llamaClient)
+		go handleImageAnalysis(update, m.client, m.config, m.logger, m.repository, llamaClient, deps)
 	default:
 		m.logger.Debug("unknown AI_Icon action", zap.String("action", action))
 	}

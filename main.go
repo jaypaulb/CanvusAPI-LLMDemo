@@ -320,8 +320,6 @@ func main() {
 	// Wire WebSocket broadcaster into monitor for real-time task updates
 	if broadcaster := webServer.GetBroadcaster(); broadcaster != nil {
 		monitor.SetTaskBroadcaster(broadcaster)
-		// Also wire into handlers.go for direct task recording
-		SetDashboardMetrics(metricsStore, broadcaster)
 		logger.Info("Task broadcaster wired for real-time dashboard updates")
 	}
 
