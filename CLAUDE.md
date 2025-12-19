@@ -439,6 +439,7 @@ go_backend/
 - `connectAndStream()`: Establishes streaming connection to Canvus API
 - `handleUpdate()`: Processes widget updates, detects AI prompts in `{{ }}`
 - Thread-safe widget state management with `sync.RWMutex`
+- ✅ Dependency injection: Config passed via Monitor struct to all handlers
 
 **handlers.go** (Organism)
 - AI processing handlers for different content types (2,497 lines)
@@ -448,8 +449,8 @@ go_backend/
 - Image generation: Supports OpenAI DALL-E and Azure OpenAI
 - Handwriting recognition: Google Vision API integration
 - Dashboard metrics integration: Records task starts, completions, errors
-- **TECHNICAL DEBT**: Shared resources protected by mutexes (`logMutex`, `downloadsMutex`, `metricsMutex`)
-- **TECHNICAL DEBT**: Global config variable (`var config *core.Config`) violates dependency injection
+- ✅ Dependency injection: `HandlerDependencies` struct provides metrics and task broadcasting
+- All handlers receive config as parameter (no global config)
 
 **webui/server.go** (Page - Additional Composition Root)
 - Real-time web dashboard with WebSocket support
@@ -564,16 +565,14 @@ When refactoring existing code:
 - ✅ `sdruntime/` - Stable Diffusion CGo bindings (stubbed, awaiting library)
 - ✅ `vision/`, `shutdown/` - Supporting utilities
 
+**Dependency Injection Migration: COMPLETE ✅**
+- ✅ Eliminated global `config` variable - now passed via Monitor struct to all handlers
+- ✅ Implemented `HandlerDependencies` struct for metrics and task broadcasting
+- Remaining: logMutex, downloadsMutex (tracked in separate Beads issues)
+
 **Current Technical Debt (Priority Order):**
 
-1. **Global State in handlers.go** (HIGH PRIORITY)
-   - `var config *core.Config` at handlers.go:41
-   - Shared mutexes: `logMutex`, `downloadsMutex`, `metricsMutex` (handlers.go:58-60)
-   - Dashboard globals: `dashboardMetricsStore`, `dashboardTaskBroadcaster` (handlers.go:62-63)
-   - **Impact**: Violates dependency injection, makes testing harder
-   - **Fix**: Pass config via Monitor struct, inject metrics/loggers
-
-2. **Core Package Bloat** (MEDIUM PRIORITY)
+1. **Core Package Bloat** (MEDIUM PRIORITY)
    - `core/` package has grown to 11,071 lines
    - Mixes atoms (config parsing), molecules (HTTP clients), and validation suites
    - **Recommended decomposition**:
@@ -581,7 +580,7 @@ When refactoring existing code:
      - `core/validation/` → separate package for validation suite
      - Keep only config.go, types.go, ai.go in core/
 
-3. **handlers.go Size** (LOW PRIORITY)
+2. **handlers.go Size** (LOW PRIORITY)
    - 2,497 lines is still large but manageable
    - Could split into handler-specific files:
      - `handlers/note_handler.go` (~400 lines)
@@ -590,13 +589,13 @@ When refactoring existing code:
      - `handlers/snapshot_handler.go` (~200 lines)
    - **Note**: Orchestration logic is expected to be substantial; current delegation pattern is acceptable
 
-4. **Incomplete Features** (BLOCKED BY EXTERNAL DEPENDENCIES)
+3. **Incomplete Features** (BLOCKED BY EXTERNAL DEPENDENCIES)
    - Vision inference in llamaruntime (TODO at llamaruntime/bindings.go:762)
    - Full GPU memory query via NVML (TODO at llamaruntime/bindings.go:803)
    - Stable Diffusion library integration (TODOs at sdruntime/cgo_bindings_sd.go:89,135,186,196,206)
    - **Status**: Stubbed and ready for implementation when dependencies available
 
-5. **Test Coverage Gaps** (LOW PRIORITY)
+4. **Test Coverage Gaps** (LOW PRIORITY)
    - `imagegen/sd/`: 0% coverage (CGo-dependent, requires SD library)
    - `imagegen`: 73% coverage (cloud API mocking infrastructure needed for 85%+)
    - Most packages have 85-95% coverage; gaps are in external API integration
