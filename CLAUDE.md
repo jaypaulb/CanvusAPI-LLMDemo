@@ -287,10 +287,17 @@ bv --robot-diff --diff-since v1.0.0
 3. **Organisms** (Complex Feature Units)
    - `Monitor`: Canvas monitoring service managing widget state, updates, and processing
    - `pdfprocessor.Processor`: Complete PDF pipeline (extract → chunk → summarize)
-   - `imagegen.Generator`: Cloud image generation pipeline (generate → download → upload)
+   - `imagegen.Generator`: Image generation pipeline (cloud/local → download → upload)
+   - `imagegen/sd.Client`: Stable Diffusion client for local image generation
    - `ocrprocessor.Processor`: OCR pipeline (validate → process → return text)
    - `canvasanalyzer.Processor`: Canvas analysis pipeline (fetch → filter → analyze)
    - `canvusapi.Client`: Full API interaction layer with methods for widgets, notes, images
+   - `webui.Server`: Web dashboard server with WebSocket real-time updates
+   - `webui.CanvasHealthMonitor`: Periodic health checks for canvas connectivity
+   - `webui.CanvasManager`: Multi-canvas lifecycle management
+   - `llamaruntime.Client`: LLM client for local inference via llama.cpp
+   - `db.Repository`: Database repository for persistent storage
+   - `metrics.GPUCollector`: GPU metrics collection (NVML/nvidia-smi)
    - Handler functions in `handlers.go`: Wire organisms together for canvas events
 
 4. **Templates** (Structural Contracts)
@@ -301,23 +308,31 @@ bv --robot-diff --diff-since v1.0.0
 
 5. **Pages** (Composition Roots)
    - `main.go`: Application bootstrap, wires together Monitor + Client + Config
+   - `webui/server.go`: Web dashboard server, wires together health monitoring + canvas management + metrics
    - Context-based lifecycle management with signal handling
+   - Graceful shutdown coordination via `shutdown/` package
 
 ### Package Structure
 
 ```
 go_backend/
-├── main.go                  # Entry point: loads config, creates client & monitor
-├── handlers.go              # AI processing handlers (wires organisms together)
-├── monitorcanvus.go        # Canvas monitoring service with streaming updates
-├── core/                    # Core business logic atoms
+├── main.go                  # Entry point: loads config, creates client & monitor (843 lines)
+├── handlers.go              # AI processing handlers (wires organisms together) (2,497 lines)
+├── monitorcanvus.go        # Canvas monitoring service with streaming updates (635 lines)
+├── core/                    # Core configuration and shared utilities (11,071 lines)
 │   ├── config.go           # Configuration management (env parsing, HTTP client factory)
-│   └── ai.go               # OpenAI client creation and basic AI response
+│   ├── ai.go               # OpenAI client creation and basic AI response
+│   ├── modelmanager.go     # Model loading and management
+│   ├── validation.go       # Configuration validation suite
+│   └── types.go            # Shared type definitions
 ├── canvusapi/              # Canvus API client organism
 │   └── canvusapi.go        # Widget CRUD, file uploads, API error handling
-├── logging/                # Logging utility atom
-│   └── logging.go          # Simple log handler
-├── handlers/               # NEW: Handler utility atoms
+├── logging/                # Structured logging infrastructure (4,467 lines)
+│   ├── logger.go           # Main logger implementation
+│   ├── config.go           # Logging configuration
+│   ├── handler.go          # Log handler utilities
+│   └── logger_test.go      # Logger test suite
+├── handlers/               # Handler utility atoms (1,030 lines)
 │   ├── text_processing.go  # GenerateCorrelationID, TruncateText, ExtractAIPrompt
 │   ├── validation.go       # Input validation atoms
 │   ├── location.go         # Widget location calculation
@@ -325,29 +340,66 @@ go_backend/
 │   ├── note_updater.go     # Note update helpers
 │   ├── progress_reporter.go # Progress reporting utilities
 │   └── ai_client_factory.go # AI client creation factory
-├── pdfprocessor/           # NEW: PDF processing organism
+├── pdfprocessor/           # PDF processing organism (4,070 lines)
 │   ├── atoms.go            # Pure PDF utility functions
 │   ├── extractor.go        # PDF text extraction molecule
 │   ├── chunker.go          # Text chunking molecule
 │   ├── summarizer.go       # AI summarization molecule
-│   └── processor.go        # Processor organism (orchestrates all)
-├── imagegen/               # NEW: Image generation organism
+│   ├── processor.go        # Processor organism (orchestrates all)
+│   └── integration_test.go # Comprehensive integration tests (91.9% coverage)
+├── imagegen/               # Image generation organism (4,881 lines)
 │   ├── atoms.go            # URL validation, format detection
 │   ├── placement.go        # Canvas placement calculation
 │   ├── openai_provider.go  # OpenAI DALL-E provider molecule
 │   ├── azure_provider.go   # Azure OpenAI provider molecule
 │   ├── downloader.go       # Image download molecule
-│   └── generator.go        # Generator organism (orchestrates all)
-├── ocrprocessor/           # NEW: OCR processing organism
+│   ├── generator.go        # Generator organism (orchestrates all)
+│   └── sd/                 # Stable Diffusion support (CGo bindings)
+│       ├── client.go       # SD client interface
+│       ├── client_sd.go    # CGo implementation (requires stable-diffusion.cpp)
+│       ├── client_stub.go  # Fallback stub
+│       └── types.go        # SD data structures
+├── ocrprocessor/           # OCR processing organism (2,350 lines)
 │   ├── atoms.go            # API key validation atoms
 │   ├── client.go           # Google Vision API client molecule
-│   └── processor.go        # Processor organism (orchestrates all)
-├── canvasanalyzer/         # NEW: Canvas analysis organism
+│   ├── processor.go        # Processor organism (orchestrates all)
+│   └── processor_test.go   # Integration tests (94.5% coverage)
+├── canvasanalyzer/         # Canvas analysis organism (3,249 lines)
 │   ├── atoms.go            # Widget filtering/formatting atoms
 │   ├── fetcher.go          # Widget fetching molecule with retry
 │   ├── analyzer.go         # Analysis logic molecule
-│   └── processor.go        # Processor organism (orchestrates all)
-└── tests/                  # Integration test suite
+│   ├── processor.go        # Processor organism (orchestrates all)
+│   └── integration_test.go # Integration tests (94.5% coverage)
+├── webui/                  # Real-time web dashboard (8,313 lines)
+│   ├── server.go           # HTTP server and API routing
+│   ├── dashboard_api.go    # Dashboard API endpoints organism
+│   ├── health_monitor.go   # CanvasHealthMonitor organism (periodic health checks)
+│   ├── canvas_manager.go   # CanvasManager organism (multi-canvas lifecycle)
+│   ├── websocket.go        # WebSocket real-time updates
+│   └── static/             # Frontend assets (HTML, CSS, JS)
+├── llamaruntime/           # llama.cpp integration (10,373 lines)
+│   ├── client.go           # LLM client organism
+│   ├── bindings.go         # CGo bindings to llama.cpp
+│   ├── types.go            # llama.cpp data structures
+│   └── benchmarks/         # Performance benchmarks
+├── db/                     # SQLite database layer (5,357 lines)
+│   ├── repository.go       # Database repository organism
+│   ├── migrations.go       # Schema migrations
+│   ├── models.go           # Data models
+│   └── queries.go          # SQL query builders
+├── metrics/                # Metrics collection for dashboard (2,463 lines)
+│   ├── store.go            # Metrics storage
+│   ├── collector.go        # Metrics collection
+│   ├── gpu_collector.go    # GPUCollector organism (NVML/nvidia-smi)
+│   └── broadcaster.go      # Task event broadcasting
+├── sdruntime/              # Stable Diffusion runtime (CGo bindings)
+│   ├── cgo_bindings_sd.go  # CGo bindings (stubbed, awaiting library)
+│   └── types.go            # SD data structures
+├── vision/                 # Image preprocessing utilities
+│   └── preprocessing.go    # Image transformation atoms
+├── shutdown/               # Graceful shutdown management
+│   └── handler.go          # Shutdown coordination
+└── tests/                  # Integration test suite (139 test files total)
     ├── canvas_check_test.go
     ├── llm_test.go
     ├── testAPI_test.go
@@ -389,13 +441,48 @@ go_backend/
 - Thread-safe widget state management with `sync.RWMutex`
 
 **handlers.go** (Organism)
-- AI processing handlers for different content types
+- AI processing handlers for different content types (2,497 lines)
 - Note processing: Extracts `{{ }}` prompts, calls OpenAI, creates response notes
 - PDF analysis: Downloads PDF, extracts text, generates summary
 - Canvas analysis: Collects all widgets, generates overview
 - Image generation: Supports OpenAI DALL-E and Azure OpenAI
 - Handwriting recognition: Google Vision API integration
-- Shared resources protected by mutexes (`logMutex`, `downloadsMutex`, `metricsMutex`)
+- Dashboard metrics integration: Records task starts, completions, errors
+- **TECHNICAL DEBT**: Shared resources protected by mutexes (`logMutex`, `downloadsMutex`, `metricsMutex`)
+- **TECHNICAL DEBT**: Global config variable (`var config *core.Config`) violates dependency injection
+
+**webui/server.go** (Page - Additional Composition Root)
+- Real-time web dashboard with WebSocket support
+- HTTP server and API routing
+- Static file serving for frontend assets
+- Health monitoring and multi-canvas management endpoints
+
+**webui/health_monitor.go** (Organism)
+- CanvasHealthMonitor: Periodic health checks for canvas connectivity
+- Monitors widget counts, processing status, error rates
+- Broadcasts health status via WebSocket
+
+**webui/canvas_manager.go** (Organism)
+- CanvasManager: Multi-canvas lifecycle management
+- Start/stop canvas monitoring dynamically
+- Coordinate multiple canvas instances
+
+**llamaruntime/client.go** (Organism)
+- LLM client for local inference via llama.cpp
+- CGo bindings to llama.cpp C API
+- Model loading, inference, context management
+- **INCOMPLETE**: Vision inference not yet implemented (llamaruntime/bindings.go:762)
+
+**db/repository.go** (Organism)
+- SQLite database layer for persistent storage
+- Schema migrations
+- Metrics storage and retrieval
+- Processing history tracking
+
+**metrics/gpu_collector.go** (Organism)
+- GPUCollector: GPU metrics collection
+- Uses NVML for NVIDIA GPUs (falls back to nvidia-smi)
+- **INCOMPLETE**: Full GPU memory query via NVML not implemented (llamaruntime/bindings.go:803)
 
 ### Critical Implementation Notes
 
@@ -458,26 +545,61 @@ When refactoring existing code:
    - Organisms: Integration tests, may need mocks
    - Pages: End-to-end tests
 
-### Refactoring Status (Phase 4 Complete)
+### Refactoring Status
 
-**handlers.go Refactoring: COMPLETE**
-- ✅ Extracted `pdfprocessor/` package for PDF text extraction and summarization
-- ✅ Extracted `imagegen/` package for cloud image generation (OpenAI/Azure)
-- ✅ Extracted `ocrprocessor/` package for Google Vision OCR
-- ✅ Extracted `canvasanalyzer/` package for widget fetching and analysis
-- ✅ Extracted `handlers/` package for shared text processing atoms
-- File reduced from ~2100 lines to ~1984 lines with 28 references to new packages
+**Phase 4 (Package Extraction): COMPLETE ✅**
+- ✅ Extracted `pdfprocessor/` package (4,070 lines, 91.9% test coverage)
+- ✅ Extracted `imagegen/` package (4,881 lines, 73% coverage, includes SD support)
+- ✅ Extracted `ocrprocessor/` package (2,350 lines, 94.5% coverage)
+- ✅ Extracted `canvasanalyzer/` package (3,249 lines, 94.5% coverage)
+- ✅ Extracted `handlers/` package (1,030 lines, shared utilities)
+- ✅ Implemented `logging/` package (4,467 lines, structured logging)
+- `handlers.go` remains at 2,497 lines but delegates heavy lifting to extracted packages
 
-**Remaining Technical Debt**
+**Additional Features Beyond Original Roadmap:**
+- ✅ `webui/` package (8,313 lines) - Real-time dashboard with WebSocket
+- ✅ `llamaruntime/` package (10,373 lines) - llama.cpp CGo bindings
+- ✅ `db/` package (5,357 lines) - SQLite persistence layer
+- ✅ `metrics/` package (2,463 lines) - Metrics collection and GPU monitoring
+- ✅ `sdruntime/` - Stable Diffusion CGo bindings (stubbed, awaiting library)
+- ✅ `vision/`, `shutdown/` - Supporting utilities
 
-*Shared Global State*
-- `var config *core.Config` in handlers.go is still a global
-- Should be passed explicitly or stored in Monitor struct
-- Violates dependency injection principles
+**Current Technical Debt (Priority Order):**
 
-*Local Image Generation (SD Runtime)*
-- `imagegen/sd/` subdirectory placeholder for stable-diffusion.cpp integration
-- Currently using cloud providers only; local generation planned for Phase 3
+1. **Global State in handlers.go** (HIGH PRIORITY)
+   - `var config *core.Config` at handlers.go:41
+   - Shared mutexes: `logMutex`, `downloadsMutex`, `metricsMutex` (handlers.go:58-60)
+   - Dashboard globals: `dashboardMetricsStore`, `dashboardTaskBroadcaster` (handlers.go:62-63)
+   - **Impact**: Violates dependency injection, makes testing harder
+   - **Fix**: Pass config via Monitor struct, inject metrics/loggers
+
+2. **Core Package Bloat** (MEDIUM PRIORITY)
+   - `core/` package has grown to 11,071 lines
+   - Mixes atoms (config parsing), molecules (HTTP clients), and validation suites
+   - **Recommended decomposition**:
+     - `core/modelmanager/` → separate package for model loading
+     - `core/validation/` → separate package for validation suite
+     - Keep only config.go, types.go, ai.go in core/
+
+3. **handlers.go Size** (LOW PRIORITY)
+   - 2,497 lines is still large but manageable
+   - Could split into handler-specific files:
+     - `handlers/note_handler.go` (~400 lines)
+     - `handlers/image_handler.go` (~400 lines)
+     - `handlers/canvas_handler.go` (~300 lines)
+     - `handlers/snapshot_handler.go` (~200 lines)
+   - **Note**: Orchestration logic is expected to be substantial; current delegation pattern is acceptable
+
+4. **Incomplete Features** (BLOCKED BY EXTERNAL DEPENDENCIES)
+   - Vision inference in llamaruntime (TODO at llamaruntime/bindings.go:762)
+   - Full GPU memory query via NVML (TODO at llamaruntime/bindings.go:803)
+   - Stable Diffusion library integration (TODOs at sdruntime/cgo_bindings_sd.go:89,135,186,196,206)
+   - **Status**: Stubbed and ready for implementation when dependencies available
+
+5. **Test Coverage Gaps** (LOW PRIORITY)
+   - `imagegen/sd/`: 0% coverage (CGo-dependent, requires SD library)
+   - `imagegen`: 73% coverage (cloud API mocking infrastructure needed for 85%+)
+   - Most packages have 85-95% coverage; gaps are in external API integration
 
 ## Environment Configuration
 
@@ -592,6 +714,74 @@ fetcher := canvasanalyzer.NewFetcher(canvusClient, canvasanalyzer.DefaultFetcher
 
 // Fetch widgets with retry
 widgets, err := fetcher.FetchWithRetry(ctx)
+```
+
+**Local LLM Inference (llamaruntime)**
+```go
+import "go_backend/llamaruntime"
+
+// Create LLM client
+client, err := llamaruntime.NewClient(modelPath, logger, llamaruntime.DefaultClientConfig())
+if err != nil {
+    return err
+}
+defer client.Close()
+
+// Generate text
+response, err := client.Generate(ctx, prompt, llamaruntime.GenerationParams{
+    MaxTokens: 512,
+    Temperature: 0.7,
+})
+```
+
+**Web Dashboard (webui)**
+```go
+import "go_backend/webui"
+
+// Create and start dashboard server
+server := webui.NewServer(config, logger, metricsStore)
+go server.Start(ctx)
+
+// Health monitoring
+healthMonitor := webui.NewHealthMonitor(canvasClient, metricsStore, logger)
+healthMonitor.StartPeriodicChecks(ctx, 30*time.Second)
+```
+
+**Database Operations (db)**
+```go
+import "go_backend/db"
+
+// Open database
+repository, err := db.NewRepository(dbPath, logger)
+if err != nil {
+    return err
+}
+defer repository.Close()
+
+// Run migrations
+if err := repository.RunMigrations(); err != nil {
+    return err
+}
+
+// Store metrics
+err = repository.StoreMetric(ctx, metric)
+```
+
+**GPU Metrics (metrics)**
+```go
+import "go_backend/metrics"
+
+// Create GPU collector
+collector := metrics.NewGPUCollector(logger)
+
+// Collect current metrics
+gpuMetrics, err := collector.Collect()
+if err != nil {
+    return err
+}
+
+fmt.Printf("GPU Usage: %.1f%%, VRAM: %d MB\n",
+    gpuMetrics.Utilization, gpuMetrics.MemoryUsed)
 ```
 
 ### Adding a New AI Feature
