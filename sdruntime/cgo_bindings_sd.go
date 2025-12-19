@@ -57,6 +57,8 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -70,8 +72,8 @@ type cgoContext struct {
 }
 
 // contextMap stores the mapping from SDContext.id to cgoContext
-// In production, this would use sync.Map for thread safety
-var contextMap = make(map[uint64]*cgoContext)
+// Thread-safe map for concurrent access from multiple goroutines
+var contextMap sync.Map
 
 // loadModelImpl is the real CGo implementation of LoadModel.
 func loadModelImpl(modelPath string) (*SDContext, error) {
@@ -86,19 +88,23 @@ func loadModelImpl(modelPath string) (*SDContext, error) {
 	cModelPath := C.CString(modelPath)
 	defer C.free(unsafe.Pointer(cModelPath))
 
+	// Determine optimal thread count
+	numThreads := runtime.NumCPU()
+
 	// TODO: Uncomment when library is available:
-	// cCtx := C.sd_ctx_create(cModelPath, C.int(runtime.NumCPU()))
+	// cCtx := C.sd_ctx_create(cModelPath, C.int(numThreads))
 	// if cCtx == nil {
 	//     return nil, fmt.Errorf("%w: C library returned null context", ErrModelLoadFailed)
 	// }
 
 	// For now, return error indicating library not fully integrated
+	_ = numThreads // Use variable to avoid unused error
 	return nil, fmt.Errorf("%w: stable-diffusion.cpp CGo bindings not yet implemented. "+
 		"Library header integration pending", ErrModelLoadFailed)
 
 	// When implemented, the code would continue:
 	// id := atomic.AddUint64(&sdContextCounter, 1)
-	// contextMap[id] = &cgoContext{cCtx: cCtx}
+	// contextMap.Store(id, &cgoContext{cCtx: cCtx})
 	//
 	// return &SDContext{
 	//     id:        id,
@@ -113,10 +119,15 @@ func generateImageImpl(ctx *SDContext, params GenerateParams) (*GenerateResult, 
 		return nil, fmt.Errorf("%w: context is nil or invalid", ErrGenerationFailed)
 	}
 
-	// Get C context from map
-	cgoCtx, ok := contextMap[ctx.id]
-	if !ok || cgoCtx == nil || cgoCtx.cCtx == nil {
+	// Get C context from thread-safe map
+	val, ok := contextMap.Load(ctx.id)
+	if !ok {
 		return nil, fmt.Errorf("%w: no valid C context found", ErrGenerationFailed)
+	}
+
+	cgoCtx, ok := val.(*cgoContext)
+	if !ok || cgoCtx == nil || cgoCtx.cCtx == nil {
+		return nil, fmt.Errorf("%w: invalid C context type", ErrGenerationFailed)
 	}
 
 	// Convert Go strings to C strings
@@ -126,10 +137,10 @@ func generateImageImpl(ctx *SDContext, params GenerateParams) (*GenerateResult, 
 	cNegPrompt := C.CString(params.NegativePrompt)
 	defer C.free(unsafe.Pointer(cNegPrompt))
 
-	// Resolve seed if random requested
+	// Resolve seed if random requested (use correct function name)
 	seed := params.Seed
 	if seed < 0 {
-		seed = GenerateSeed()
+		seed = RandomSeed()
 	}
 
 	// TODO: Uncomment when library is available:
@@ -152,12 +163,13 @@ func generateImageImpl(ctx *SDContext, params GenerateParams) (*GenerateResult, 
 	// }
 	// defer C.sd_free_image(imgPtr)
 	//
-	// // Calculate image size (assuming RGBA)
+	// // Calculate image size (assuming RGBA format: 4 bytes per pixel)
 	// imgSize := int(outWidth) * int(outHeight) * 4
+	// // Copy C memory to Go slice before freeing
 	// imgData := C.GoBytes(unsafe.Pointer(imgPtr), C.int(imgSize))
 	//
-	// // Convert to PNG using image_utils atom
-	// pngData, err := EncodePNG(imgData, int(outWidth), int(outHeight))
+	// // Convert RGBA bytes to PNG format using atom function
+	// pngData, err := EncodeToPNG(imgData, int(outWidth), int(outHeight))
 	// if err != nil {
 	//     return nil, fmt.Errorf("%w: failed to encode PNG: %v", ErrGenerationFailed, err)
 	// }
@@ -180,12 +192,13 @@ func freeContextImpl(ctx *SDContext) {
 		return
 	}
 
-	// Get and remove C context from map
-	cgoCtx, ok := contextMap[ctx.id]
-	if ok && cgoCtx != nil && cgoCtx.cCtx != nil {
-		// TODO: Uncomment when library is available:
-		// C.sd_ctx_free(cgoCtx.cCtx)
-		delete(contextMap, ctx.id)
+	// Get and remove C context from thread-safe map
+	val, ok := contextMap.LoadAndDelete(ctx.id)
+	if ok {
+		if cgoCtx, ok := val.(*cgoContext); ok && cgoCtx != nil && cgoCtx.cCtx != nil {
+			// TODO: Uncomment when library is available:
+			// C.sd_ctx_free(cgoCtx.cCtx)
+		}
 	}
 
 	ctx.valid = false

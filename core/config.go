@@ -20,7 +20,7 @@ type CanvasConfig struct {
 
 // Config holds all configuration values
 type Config struct {
-	// API Keys
+	// API Keys (all optional - cloud fallback only)
 	OpenAIAPIKey    string
 	GoogleVisionKey string
 	CanvusAPIKey    string
@@ -34,7 +34,7 @@ type Config struct {
 	Port                 int
 	AllowSelfSignedCerts bool
 
-	// LLM API Configuration
+	// LLM API Configuration (defaults to local inference)
 	BaseLLMURL  string // Default API endpoint for all LLM operations
 	TextLLMURL  string // Optional override for text generation
 	ImageLLMURL string // Optional override for image generation
@@ -45,18 +45,28 @@ type Config struct {
 	LlamaModelsDir    string // Directory for storing models (default: ./models)
 	LlamaAutoDownload bool   // Enable auto-download of model if not found
 
-	// Azure OpenAI Configuration
+	// Stable Diffusion (local image generation) Configuration
+	SDModelPath      string  // Path to SD model file (.safetensors, .ckpt, or .gguf)
+	SDImageSize      int     // Image output size in pixels (default: 512, must be divisible by 8)
+	SDInferenceSteps int     // Number of denoising steps (default: 20, range: 1-100)
+	SDGuidanceScale  float64 // CFG scale (default: 7.0, range: 1.0-30.0)
+	SDNegativePrompt string  // Default negative prompt for generation
+	SDTimeoutSeconds int     // Generation timeout in seconds (default: 120)
+	SDMaxConcurrent  int     // Maximum concurrent generations (default: 2, adjust for VRAM)
+	SDMaxImageSize   int     // Maximum image size in pixels (default: 1024)
+
+	// Azure OpenAI Configuration (optional cloud fallback)
 	AzureOpenAIEndpoint   string // Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
 	AzureOpenAIDeployment string // Azure deployment name for image generation
 	AzureOpenAIApiVersion string // Azure API version (default: 2024-02-15-preview)
 
-	// Model Selection
+	// Model Selection (optional - local models don't need OpenAI identifiers)
 	OpenAINoteModel   string
 	OpenAICanvasModel string
 	OpenAIPDFModel    string
 	OpenAIImageModel  string
 
-	// Token Limits
+	// Token Limits (sensible defaults for local inference)
 	PDFPrecisTokens       int64
 	CanvasPrecisTokens    int64
 	NoteResponseTokens    int64
@@ -66,7 +76,7 @@ type Config struct {
 	PDFMaxChunksTokens    int64
 	PDFSummaryRatioTokens float64
 
-	// Processing Configuration
+	// Processing Configuration (optimized for local GPU)
 	MaxRetries        int
 	RetryDelay        time.Duration
 	AITimeout         time.Duration
@@ -137,20 +147,23 @@ func parseCanvasIDs(key string) []string {
 	return result
 }
 
-// LoadConfig loads configuration from environment variables
+// LoadConfig loads configuration from environment variables with sensible defaults
+// for zero-config local AI deployment. Only Canvus credentials are required.
 func LoadConfig() (*Config, error) {
-	// Load API keys
+	// Load API keys (all optional - only needed for cloud fallback)
 	openAIKey := os.Getenv("OPENAI_API_KEY")
 	if openAIKey == "" {
 		openAIKey = os.Getenv("OPENAI_KEY") // Legacy support
 	}
 
-	// Load LLM URLs
+	// Load LLM URLs with local-first defaults
+	// Default to local llamaruntime server for all operations
 	baseLLMURL := getEnvOrDefault("BASE_LLM_URL", "http://127.0.0.1:1234/v1")
-	textLLMURL := os.Getenv("TEXT_LLM_URL")                                      // Optional override
-	imageLLMURL := getEnvOrDefault("IMAGE_LLM_URL", "https://api.openai.com/v1") // Default to OpenAI for image generation
+	textLLMURL := os.Getenv("TEXT_LLM_URL") // Optional override
+	// Default to empty for image generation (triggers local SD generation)
+	imageLLMURL := os.Getenv("IMAGE_LLM_URL")
 
-	// Load Azure OpenAI configuration
+	// Load Azure OpenAI configuration (optional cloud fallback)
 	azureOpenAIEndpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")
 	azureOpenAIDeployment := os.Getenv("AZURE_OPENAI_DEPLOYMENT")
 	azureOpenAIApiVersion := getEnvOrDefault("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
@@ -161,29 +174,76 @@ func LoadConfig() (*Config, error) {
 	llamaModelsDir := getEnvOrDefault("LLAMA_MODELS_DIR", "./models")
 	llamaAutoDownload := getEnvOrDefault("LLAMA_AUTO_DOWNLOAD", "false") == "true"
 
-	// Load model names
-	noteModel := getEnvOrDefault("OPENAI_NOTE_MODEL", "gpt-4")
-	canvasModel := getEnvOrDefault("OPENAI_CANVAS_MODEL", "gpt-4")
-	pdfModel := getEnvOrDefault("OPENAI_PDF_MODEL", "gpt-4")
-	imageModel := getEnvOrDefault("IMAGE_GEN_MODEL", "dall-e-3")
+	// Load Stable Diffusion configuration
+	sdModelPath := os.Getenv("SD_MODEL_PATH")
+	sdImageSize := parseIntEnv("SD_IMAGE_SIZE", 512)
+	sdInferenceSteps := parseIntEnv("SD_INFERENCE_STEPS", 20)
+	sdGuidanceScale := parseFloat64Env("SD_GUIDANCE_SCALE", 7.0)
+	sdNegativePrompt := os.Getenv("SD_NEGATIVE_PROMPT")
+	sdTimeoutSeconds := parseIntEnv("SD_TIMEOUT_SECONDS", 120)
+	sdMaxConcurrent := parseIntEnv("SD_MAX_CONCURRENT", 2)
+	sdMaxImageSize := parseIntEnv("SD_MAX_IMAGE_SIZE", 1024)
 
-	// Load token limits with standardized default values
+	// Validate SD configuration if model path is set
+	if sdModelPath != "" {
+		// Validate image size is divisible by 8
+		if sdImageSize%8 != 0 {
+			return nil, fmt.Errorf("SD_IMAGE_SIZE must be divisible by 8, got %d", sdImageSize)
+		}
+		// Validate image size range
+		if sdImageSize < 128 || sdImageSize > sdMaxImageSize {
+			return nil, fmt.Errorf("SD_IMAGE_SIZE must be between 128 and %d, got %d", sdMaxImageSize, sdImageSize)
+		}
+		// Validate inference steps
+		if sdInferenceSteps < 1 || sdInferenceSteps > 150 {
+			return nil, fmt.Errorf("SD_INFERENCE_STEPS must be between 1 and 150, got %d", sdInferenceSteps)
+		}
+		// Validate guidance scale
+		if sdGuidanceScale < 1.0 || sdGuidanceScale > 20.0 {
+			return nil, fmt.Errorf("SD_GUIDANCE_SCALE must be between 1.0 and 20.0, got %.2f", sdGuidanceScale)
+		}
+		// Validate timeout
+		if sdTimeoutSeconds < 10 {
+			return nil, fmt.Errorf("SD_TIMEOUT_SECONDS must be at least 10, got %d", sdTimeoutSeconds)
+		}
+		// Validate max concurrent
+		if sdMaxConcurrent < 1 || sdMaxConcurrent > 10 {
+			return nil, fmt.Errorf("SD_MAX_CONCURRENT must be between 1 and 10, got %d", sdMaxConcurrent)
+		}
+	}
+
+	// Load model names (optional - local models don't need OpenAI identifiers)
+	noteModel := getEnvOrDefault("OPENAI_NOTE_MODEL", "")
+	canvasModel := getEnvOrDefault("OPENAI_CANVAS_MODEL", "")
+	pdfModel := getEnvOrDefault("OPENAI_PDF_MODEL", "")
+	imageModel := getEnvOrDefault("IMAGE_GEN_MODEL", "")
+
+	// Load token limits with sensible defaults optimized for local inference
+	// Lower token limits improve response time for quick operations
+	noteResponseTokens := parseInt64Env("OPENAI_NOTE_RESPONSE_TOKENS", 400)
+	// Higher token limits for complex analysis tasks
 	pdfPrecisTokens := parseInt64Env("OPENAI_PDF_PRECIS_TOKENS", 1000)
 	canvasPrecisTokens := parseInt64Env("OPENAI_CANVAS_PRECIS_TOKENS", 600)
-	noteResponseTokens := parseInt64Env("OPENAI_NOTE_RESPONSE_TOKENS", 400)
+	// Very high limit for vision models which need large context windows
 	imageAnalysisTokens := parseInt64Env("OPENAI_IMAGE_ANALYSIS_TOKENS", 16384)
 	errorResponseTokens := parseInt64Env("OPENAI_ERROR_RESPONSE_TOKENS", 200)
+	// PDF chunking settings balance memory usage and processing thoroughness
 	pdfChunkSizeTokens := parseInt64Env("OPENAI_PDF_CHUNK_SIZE_TOKENS", 20000)
 	pdfMaxChunksTokens := parseInt64Env("OPENAI_PDF_MAX_CHUNKS_TOKENS", 10)
 	pdfSummaryRatio := parseFloat64Env("OPENAI_PDF_SUMMARY_RATIO", 0.3)
 
-	// Load processing configuration
+	// Load processing configuration optimized for local GPU inference
+	// 3 retries with 1s delay handles transient issues without excessive wait
 	maxRetries := parseIntEnv("MAX_RETRIES", 3)
 	retryDelay := time.Duration(parseIntEnv("RETRY_DELAY", 1)) * time.Second
+	// 60s AI timeout accommodates slower models while preventing hangs
 	aiTimeout := time.Duration(parseIntEnv("AI_TIMEOUT", 60)) * time.Second
+	// 300s processing timeout allows complex multi-step operations to complete
 	processingTimeout := time.Duration(parseIntEnv("PROCESSING_TIMEOUT", 300)) * time.Second
+	// 5 concurrent operations balances throughput and GPU memory usage
 	maxConcurrent := parseIntEnv("MAX_CONCURRENT", 5)
-	maxFileSize := parseInt64Env("MAX_FILE_SIZE", 52428800) // 50MB
+	// 50MB limit handles most PDFs and images while preventing abuse
+	maxFileSize := parseInt64Env("MAX_FILE_SIZE", 52428800)
 	downloadsDir := getEnvOrDefault("DOWNLOADS_DIR", "./downloads")
 	allowSelfSignedCerts := getEnvOrDefault("ALLOW_SELF_SIGNED_CERTS", "false") == "true"
 
@@ -214,10 +274,10 @@ func LoadConfig() (*Config, error) {
 		})
 	}
 
-	// Validate required environment variables
+	// Validate ONLY required Canvus credentials
+	// OpenAI API key is NOT required - only needed for cloud fallback mode
 	requiredVars := []string{
 		"CANVUS_SERVER",
-		"OPENAI_API_KEY",
 		"CANVUS_API_KEY",
 		"WEBUI_PWD",
 	}
@@ -235,11 +295,11 @@ func LoadConfig() (*Config, error) {
 	}
 
 	if len(missingVars) > 0 {
-		return nil, fmt.Errorf("missing required environment variables: %v", missingVars)
+		return nil, fmt.Errorf("missing required environment variables: %v. See .env.example for configuration template", missingVars)
 	}
 
 	return &Config{
-		// API Keys
+		// API Keys (optional - cloud fallback only)
 		OpenAIAPIKey:    openAIKey,
 		GoogleVisionKey: os.Getenv("GOOGLE_VISION_API_KEY"),
 		CanvusAPIKey:    canvusAPIKey,
@@ -253,7 +313,7 @@ func LoadConfig() (*Config, error) {
 		Port:                 parseIntEnv("PORT", 3000),
 		AllowSelfSignedCerts: allowSelfSignedCerts,
 
-		// LLM Configuration
+		// LLM Configuration (defaults to local inference)
 		BaseLLMURL:  baseLLMURL,
 		TextLLMURL:  textLLMURL,
 		ImageLLMURL: imageLLMURL,
@@ -264,18 +324,28 @@ func LoadConfig() (*Config, error) {
 		LlamaModelsDir:    llamaModelsDir,
 		LlamaAutoDownload: llamaAutoDownload,
 
-		// Azure OpenAI Configuration
+		// Stable Diffusion Configuration
+		SDModelPath:      sdModelPath,
+		SDImageSize:      sdImageSize,
+		SDInferenceSteps: sdInferenceSteps,
+		SDGuidanceScale:  sdGuidanceScale,
+		SDNegativePrompt: sdNegativePrompt,
+		SDTimeoutSeconds: sdTimeoutSeconds,
+		SDMaxConcurrent:  sdMaxConcurrent,
+		SDMaxImageSize:   sdMaxImageSize,
+
+		// Azure OpenAI Configuration (optional cloud fallback)
 		AzureOpenAIEndpoint:   azureOpenAIEndpoint,
 		AzureOpenAIDeployment: azureOpenAIDeployment,
 		AzureOpenAIApiVersion: azureOpenAIApiVersion,
 
-		// Model Selection
+		// Model Selection (optional - local models don't need identifiers)
 		OpenAINoteModel:   noteModel,
 		OpenAICanvasModel: canvasModel,
 		OpenAIPDFModel:    pdfModel,
 		OpenAIImageModel:  imageModel,
 
-		// Token Limits
+		// Token Limits (sensible defaults for local inference)
 		PDFPrecisTokens:       pdfPrecisTokens,
 		CanvasPrecisTokens:    canvasPrecisTokens,
 		NoteResponseTokens:    noteResponseTokens,
@@ -285,7 +355,7 @@ func LoadConfig() (*Config, error) {
 		PDFMaxChunksTokens:    pdfMaxChunksTokens,
 		PDFSummaryRatioTokens: pdfSummaryRatio,
 
-		// Processing Configuration
+		// Processing Configuration (optimized for local GPU)
 		MaxRetries:        maxRetries,
 		RetryDelay:        retryDelay,
 		AITimeout:         aiTimeout,
@@ -355,4 +425,9 @@ func (c *Config) GetPrimaryCanvasID() string {
 // IsMultiCanvasMode returns true if multiple canvases are configured.
 func (c *Config) IsMultiCanvasMode() bool {
 	return len(c.CanvasConfigs) > 1
+}
+
+// HasSDModel returns true if a Stable Diffusion model is configured.
+func (c *Config) HasSDModel() bool {
+	return c.SDModelPath != ""
 }
